@@ -1,0 +1,5 @@
+src
+node_modules
+logs
+tests
+dist/types
