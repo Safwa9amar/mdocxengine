@@ -1,7 +1,7 @@
 import { ZipManager } from './utils/ZipManager';
 import { ContentTypesManager } from './core/PartsManagers/ContentTypesManager';
 import DocumentManager from './core/PartsManagers/DocumentManager';
-import FooterManager from './core/PartsManagers/FooterManager';
+import FooterManager from '@/core/PartsManagers/FooterManager';
 import HeaderManager from './core/PartsManagers/HeaderManager';
 import RootRelManager from './core/PartsManagers/RootRelManager';
 import { RelManager } from './core/PartsManagers/RelManager';
@@ -36,9 +36,9 @@ import { RelManager } from './core/PartsManagers/RelManager';
 
   }
 
-  export default Mdocxengine
-
+  
   export {
+    Mdocxengine,
     ZipManager,
     RelManager,
     ContentTypesManager,

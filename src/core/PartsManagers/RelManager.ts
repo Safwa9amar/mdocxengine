@@ -1,6 +1,6 @@
-import { ZipManager } from '../../utils/ZipManager';
-import { parseXml, buildXml } from '../../utils/xmlUtils';
-import { RelsType } from '../../config/enums';
+import { ZipManager } from '@/utils/ZipManager';
+import { parseXml, buildXml } from '@/utils/xmlUtils';
+import { RelsType } from '@/config/enums';
 
 
 

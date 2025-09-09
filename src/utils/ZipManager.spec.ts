@@ -1,12 +1,12 @@
 // ZipManager.test.ts
-import { ZipManager } from "../src/utils/ZipManager";
+import { ZipManager } from "@/index";
+import { describe, test, beforeAll, expect, it } from "vitest";
+
 describe("ZipManager - Load DOCX file", () => {
   let zip: ZipManager;
 
   beforeAll(async () => {
-    zip = await ZipManager.loadFromFile("./tests/samples.docx");
-    console.log(zip); 
-    
+    zip = await ZipManager.loadFromFile("./samples/example.docx");
   });
 
   it("should load a DOCX file successfully", () => {
@@ -16,7 +16,7 @@ describe("ZipManager - Load DOCX file", () => {
 
   it("should contain document.xml inside the zip", async () => {
     const files = zip.getEntries(); // Assuming `ZipManager` has this method
-    let doc = files.find(file => file.startsWith("word/document.xml"))
+    let doc = files.find((file) => file.startsWith("word/document.xml"));
     console.log(doc);
     expect(doc).toBe("word/document.xml");
   });

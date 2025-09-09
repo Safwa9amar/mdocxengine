@@ -1,8 +1,8 @@
-import { ZipManager } from "../../utils/ZipManager";
-import * as XmlUtils from "../../utils/xmlUtils";
-import { RelManager } from "./RelManager";
+import { ZipManager } from "@/utils/ZipManager";
+import * as XmlUtils from "@/utils/xmlUtils";
+import { RelManager } from "@/core/PartsManagers/RelManager";
 import { ContentTypesManager } from "./ContentTypesManager";
-import logger from "../../utils/Logger";
+import logger from "@/utils/Logger";
 
 // HeaderManager.ts - auto generated file
 export default class HeaderManager {

@@ -3,3 +3,8 @@ node_modules
 logs
 tests
 dist/types
+coverage
+*.config.*
+.tgz
+.*
+samples

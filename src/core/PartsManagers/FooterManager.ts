@@ -1,4 +1,4 @@
-import { ZipManager } from "../../utils/ZipManager";
+import { ZipManager } from "@/utils/ZipManager";
 
 // FooterManager.ts - auto generated file
 export default class FooterManager {

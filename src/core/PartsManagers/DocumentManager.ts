@@ -1,4 +1,4 @@
-import { ZipManager } from "../../utils/ZipManager";
+import { ZipManager } from "@/utils/ZipManager";
 
 // DocumentManager.ts - auto generated file
 export default class DocumentManager {

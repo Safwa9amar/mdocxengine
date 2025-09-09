@@ -1,6 +1,6 @@
-import { ZipManager } from '../../utils/ZipManager';
-import { parseXml, buildXml } from '../../utils/xmlUtils';
-import logger from '../../utils/Logger';
+import { ZipManager } from '@/utils/ZipManager';
+import { parseXml, buildXml } from '@/utils/xmlUtils';
+import logger from '@/utils/Logger';
 
 /**
  * Represents a single Default entry in [Content_Types].xml
