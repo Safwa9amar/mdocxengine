@@ -12,7 +12,7 @@
 //     "strict": true,
 //     "moduleResolution": "node",              // Important for resolving relative paths
 //     "baseUrl": ".",                           // Needed for "paths"
-    
+
 //   },
 //   "include": ["src"],
 //   "exclude": ["node_modules", "dist"]

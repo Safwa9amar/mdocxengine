@@ -1,7 +1,6 @@
 // src/config.ts
-import { ContentTypes } from "./ContentTypes";
+import { ContentTypes, defaultContentTypes } from "./ContentTypes";
 import { BASE_OVERRIDES } from "./baseOverrides";
-import { defaultContentTypes } from "./defaultContentTypes";
 
 /**
  * Engine version
@@ -34,17 +33,6 @@ export const DOCX_FILES = {
   CONTENT_TYPES: "[Content_Types].xml",
   APP_PROPS: "docProps/app.xml",
   CORE_PROPS: "docProps/core.xml",
-};
-
-/**
- * XML namespaces used across DOCX files
- */
-export const XML_NAMESPACES = {
-  WORD: "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
-  RELS: "http://schemas.openxmlformats.org/package/2006/relationships",
-  CONTENT_TYPES: "http://schemas.openxmlformats.org/package/2006/content-types",
-  DRAWING: "http://schemas.openxmlformats.org/drawingml/2006/main",
-  OFFICE_DOCUMENT: "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
 };
 
 /**
