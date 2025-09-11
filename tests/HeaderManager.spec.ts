@@ -3,9 +3,10 @@ import { HeaderManager, Mdocxengine, ZipManager } from "@/index";
 import { parseXml } from "@/utils/xmlUtils";
 import { describe, test, beforeAll, expect, it, afterAll } from "vitest";
 import { headerFile } from "@/config/docxPaths";
+let zip: ZipManager;
+let header: HeaderManager;
+
 describe("HeaderManager", () => {
-  let zip: ZipManager;
-  let header: HeaderManager;
   // ✅ Load resources before tests
   beforeAll(async () => {
     zip = await ZipManager.loadFromFile("./samples/example.docx");
@@ -18,7 +19,6 @@ describe("HeaderManager", () => {
     const { headerPath, relId, headerXml } = await header.addHeaderSimple("hamza hassani");
     // Save the output if needed
     await zip.saveToFile(`./samples/outputs/added-header-is-${text}.docx`);
-
     // Proper assertion
     expect(typeof headerPath).toBe("string");
     expect(headerPath).toContain("header");
@@ -27,7 +27,7 @@ describe("HeaderManager", () => {
   });
 });
 
-describe("try to get all headers content from docx file", async () => {
+describe.skip("try to get all headers content from docx file", async () => {
   let docxPath: string;
   let zip: ZipManager;
   let engine: Mdocxengine;

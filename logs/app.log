@@ -2,3 +2,78 @@
 [2025-09-10T18:42:00.163Z] [INFO] {"$":{"wpc":"http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas","cx":"http://schemas.microsoft.com/office/drawing/2014/chartex","mc":"http://schemas.openxmlformats.org/markup-compatibility/2006"}}
 [2025-09-10T18:48:17.212Z] [INFO] Added Override for part: /word/header3.xml
 [2025-09-10T18:49:31.437Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T20:43:41.656Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T20:43:42.655Z] [INFO] Extracted Namespaces:
+[2025-09-10T20:43:42.656Z] [INFO] {"$":{"wpc":"http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas","cx":"http://schemas.microsoft.com/office/drawing/2014/chartex","mc":"http://schemas.openxmlformats.org/markup-compatibility/2006"}}
+[2025-09-10T20:43:53.190Z] [INFO] Extracted Namespaces:
+[2025-09-10T20:43:53.191Z] [INFO] {"$":{"wpc":"http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas","cx":"http://schemas.microsoft.com/office/drawing/2014/chartex","mc":"http://schemas.openxmlformats.org/markup-compatibility/2006"}}
+[2025-09-10T20:43:53.477Z] [INFO] Extracted Namespaces:
+[2025-09-10T20:43:53.478Z] [INFO] {"$":{"wpc":"http://schemas.microsoft.com/office/word/2010/wordprocessingCanvas","cx":"http://schemas.microsoft.com/office/drawing/2014/chartex","mc":"http://schemas.openxmlformats.org/markup-compatibility/2006"}}
+[2025-09-10T20:45:58.277Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:09:36.968Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:12:26.703Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:13:49.441Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:14:13.927Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:14:16.753Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:15:38.351Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:16:27.599Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:18:32.608Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:19:00.612Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:19:16.234Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:20:05.158Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:20:33.612Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:21:45.710Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:23:45.918Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:24:07.236Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:24:33.201Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:25:01.305Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:25:12.602Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:25:44.510Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:25:48.054Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:25:50.814Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:25:54.859Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:26:00.904Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:26:11.031Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:26:16.385Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:38:15.733Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:38:25.242Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:38:48.113Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:39:25.244Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:39:38.998Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:40:48.330Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:40:55.315Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:40:56.603Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:41:07.401Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:41:53.382Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:42:26.312Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:42:32.090Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:43:11.998Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:43:36.118Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:43:40.810Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:43:47.414Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:44:15.060Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:44:33.375Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:44:52.464Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:45:02.081Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:45:05.043Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:45:07.552Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:45:19.879Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:45:21.206Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:45:34.514Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:45:40.129Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:45:52.768Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:46:00.070Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:46:02.774Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:46:18.894Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:46:39.468Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:46:46.078Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:46:55.624Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:47:04.305Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:48:28.738Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:49:06.580Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:49:31.306Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:49:35.689Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:49:48.028Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:50:00.248Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-10T21:51:11.478Z] [INFO] Added Override for part: /word/header3.xml
+[2025-09-11T00:29:59.554Z] [INFO] Added Override for part: /word/header3.xml

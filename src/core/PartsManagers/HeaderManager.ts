@@ -2,18 +2,31 @@ import { ZipManager } from "@/utils/ZipManager";
 import * as XmlUtils from "@/utils/xmlUtils";
 import { RelManager } from "@/core/PartsManagers/RelManager";
 import { ContentTypesManager } from "../../../tests/ContentTypesManager";
+import { headerFile } from "@/config/docxPaths";
+import AdmZip from "adm-zip";
 
-// HeaderManager.ts - auto generated file
+type xmlFile = {
+  fileName: string;
+  xml: string;
+};
+
 export default class HeaderManager {
-  zip: ZipManager;
+  zip: AdmZip;
   rels: RelManager;
   contentTypes: ContentTypesManager;
+  headers: xmlFile[];
 
   constructor(zip: ZipManager) {
     this.zip = zip;
     this.rels = new RelManager(zip);
     this.contentTypes = new ContentTypesManager(zip);
+    this.headers = this.getAllheadersFiles(zip);
   }
+
+  public getHeaderByName(name: string): xmlFile | false {
+    return this.headers.find((header) => header.fileName === name) || false;
+  }
+
   /**
    * Add a simple header part and register it in [Content_Types].xml
    */
@@ -131,6 +144,32 @@ export default class HeaderManager {
     await this.addHeaderReferenceToDocument(relId);
 
     return { headerPath, relId, headerXml };
+  }
+
+  public getAllheadersFiles(zip: ZipManager): xmlFile[] {
+    let count: number = 0;
+    let entries = zip.getEntries();
+    let files: xmlFile[] = [];
+    let cc = zip.zip.getEntries();
+    cc.forEach((cc) => console.log(cc.getData().toString()));
+
+    entries.forEach((el: string) => {
+      if (el.startsWith("word/")) {
+        count++;
+        let filename: headerFile = `word/header${count}.xml`;
+        let file = zip.getFileAsString(filename);
+
+        file
+          ? files.push({
+              fileName: filename,
+              xml: file,
+            })
+          : null;
+      }
+    });
+    console.log(files.length);
+
+    return files;
   }
 
   private async addHeaderReferenceToDocument(relId: string) {

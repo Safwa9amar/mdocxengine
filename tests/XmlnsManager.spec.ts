@@ -46,7 +46,7 @@ describe("XmlnsManager", () => {
     </w:hdr>`;
 
     const extractedNamespaces = { $: manager.getXmlnsFromXmlString(sampleXml) };
-    logger.info("Extracted Namespaces:");
-    logger.info(extractedNamespaces, true);
+    console.log("Extracted Namespaces:");
+    console.log(extractedNamespaces);
   });
 });

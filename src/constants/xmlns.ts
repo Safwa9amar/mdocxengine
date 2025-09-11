@@ -60,3 +60,5 @@ export type PrefixedElement = {
   prefix: XmlNamespacePrefix;
   elementName: string;
 };
+
+export type xmlns<T extends XmlNamespacePrefix> = `xmlns:${T}`;

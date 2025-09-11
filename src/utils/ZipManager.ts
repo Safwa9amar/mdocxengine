@@ -1,10 +1,11 @@
-import AdmZip from 'adm-zip';
+import AdmZip from "adm-zip";
 import fs from "fs/promises";
-import path from 'path';
-export class ZipManager {
+import path from "path";
+export class ZipManager extends AdmZip {
   zip: AdmZip;
 
   constructor(zip?: AdmZip) {
+    super();
     this.zip = zip ?? new AdmZip();
   }
 
@@ -22,31 +23,35 @@ export class ZipManager {
 
   getFileAsString(entryName: string): string | null {
     const buf = this.getFileAsBuffer(entryName);
-    return buf ? buf.toString('utf8') : null;
+    return buf ? buf.toString("utf8") : null;
   }
 
   fileExists(entryName: string): boolean {
     return !!this.zip.getEntry(entryName);
   }
 
-  addFile(entryName: string, content: string | Buffer): void {
-    if (this.fileExists(entryName)) {
-      // delete existing so we don't have duplicates
-      try { this.zip.deleteFile(entryName); } catch (e) { /* ignore */ }
-    }
-    const buffer = Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf8');
-    this.zip.addFile(entryName, buffer);
-  }
+  // addFile(entryName: string, content: string | Buffer): void {
+  //   if (this.fileExists(entryName)) {
+  //     // delete existing so we don't have duplicates
+  //     try { this.zip.deleteFile(entryName); } catch (e) { /* ignore */ }
+  //   }
+  //   const buffer = Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf8');
+  //   this.zip.addFile(entryName, buffer);
+  // }
 
   removeFile(entryName: string): void {
     if (this.fileExists(entryName)) {
-      try { this.zip.deleteFile(entryName); } catch (e) { /* ignore */ }
+      try {
+        this.zip.deleteFile(entryName);
+      } catch (e) {
+        /* ignore */
+      }
     }
   }
 
-  getEntries(): string[] {
-    return this.zip.getEntries().map(e => e.entryName);
-  }
+  // getEntries(): string[] {
+  //   return this.zip.getEntries().map(e => e.entryName);
+  // }
 
   async saveToFile(filePath: string): Promise<void> {
     await fs.mkdir(path.dirname(filePath), { recursive: true });
