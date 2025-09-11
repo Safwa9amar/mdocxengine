@@ -2,21 +2,12 @@ import AdmZip from "adm-zip";
 import fs from "fs/promises";
 import path from "path";
 export class ZipManager extends AdmZip {
-  zip: AdmZip;
-
-  constructor(zip?: AdmZip) {
+  constructor() {
     super();
-    this.zip = zip ?? new AdmZip();
-  }
-
-  static async loadFromFile(filePath: string): Promise<ZipManager> {
-    const data = await fs.readFile(filePath);
-    const zip = new AdmZip(data);
-    return new ZipManager(zip);
   }
 
   getFileAsBuffer(entryName: string): Buffer | null {
-    const entry = this.zip.getEntry(entryName);
+    const entry = this.getEntry(entryName);
     if (!entry) return null;
     return entry.getData();
   }
@@ -27,30 +18,20 @@ export class ZipManager extends AdmZip {
   }
 
   fileExists(entryName: string): boolean {
-    return !!this.zip.getEntry(entryName);
+    return !!this.getEntry(entryName);
   }
 
   // addFile(entryName: string, content: string | Buffer): void {
   //   if (this.fileExists(entryName)) {
   //     // delete existing so we don't have duplicates
-  //     try { this.zip.deleteFile(entryName); } catch (e) { /* ignore */ }
+  //     try { this.deleteFile(entryName); } catch (e) { /* ignore */ }
   //   }
   //   const buffer = Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf8');
-  //   this.zip.addFile(entryName, buffer);
+  //   this.addFile(entryName, buffer);
   // }
 
-  removeFile(entryName: string): void {
-    if (this.fileExists(entryName)) {
-      try {
-        this.zip.deleteFile(entryName);
-      } catch (e) {
-        /* ignore */
-      }
-    }
-  }
-
   // getEntries(): string[] {
-  //   return this.zip.getEntries().map(e => e.entryName);
+  //   return this.getEntries().map(e => e.entryName);
   // }
 
   async saveToFile(filePath: string): Promise<void> {
@@ -58,7 +39,7 @@ export class ZipManager extends AdmZip {
     // writeZip has optional callback style; use writeZip to path
     await new Promise<void>((resolve, reject) => {
       try {
-        this.zip.writeZip(filePath, (err) => {
+        this.writeZip(filePath, (err) => {
           if (err) reject(err);
           else resolve();
         });
@@ -69,6 +50,6 @@ export class ZipManager extends AdmZip {
   }
 
   toBuffer(): Buffer {
-    return this.zip.toBuffer();
+    return this.toBuffer();
   }
 }
