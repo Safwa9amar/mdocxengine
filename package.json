@@ -38,9 +38,11 @@
     "dist"
   ],
   "dependencies": {
+    "@google/genai": "^1.19.0",
     "@vitest/coverage-v8": "^3.2.4",
     "@vitest/ui": "^3.2.4",
     "adm-zip": "^0.5.16",
+    "dotenv": "^17.2.2",
     "module-alias": "^2.2.3",
     "xml2js": "^0.6.2"
   },

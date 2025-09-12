@@ -22,7 +22,7 @@ export function buildXml(
   }
 ) {
   const builder = new Builder({
-    rootName: options?.rootName,
+    // rootName: options?.rootName,
     headless: options?.headless ?? false,
     xmldec: { version: "1.0", encoding: "UTF-8", standalone: options?.standalone ?? true },
     renderOpts: {

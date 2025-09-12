@@ -1,6 +1,7 @@
-import { ZipManager } from '@/utils/ZipManager';
-import { parseXml, buildXml } from '@/utils/xmlUtils';
-import logger from '@/utils/Logger';
+import { ZipManager } from "@/utils/ZipManager";
+import { parseXml, buildXml } from "@/utils/xmlUtils";
+import logger from "@/utils/Logger";
+import AdmZip from "adm-zip";
 
 /**
  * Represents a single Default entry in [Content_Types].xml
@@ -34,19 +35,19 @@ interface ContentTypesXml {
 }
 
 export class ContentTypesManager {
-  private readonly zip: ZipManager;
-  private readonly filePath = '[Content_Types].xml';
-  private readonly ns = 'http://schemas.openxmlformats.org/package/2006/content-types';
+  private readonly zip: AdmZip;
+  private readonly filePath = "[Content_Types].xml";
+  private readonly ns = "http://schemas.openxmlformats.org/package/2006/content-types";
 
-  constructor(zip: ZipManager) {
+  constructor(zip: AdmZip) {
     this.zip = zip;
   }
 
   /** Generate a GUID */
   private generateGuid(): string {
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (char) => {
-      const rand = Math.random() * 16 | 0;
-      const value = char === 'x' ? rand : (rand & 0x3) | 0x8;
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (char) => {
+      const rand = (Math.random() * 16) | 0;
+      const value = char === "x" ? rand : (rand & 0x3) | 0x8;
       return value.toString(16);
     });
   }
@@ -55,23 +56,27 @@ export class ContentTypesManager {
    * Reads current [Content_Types].xml or returns a default structure
    */
   private async readTypes(): Promise<ContentTypesXml> {
-    const xml = this.zip.getFileAsString(this.filePath);
+    const xml = this.zip.readAsText(this.filePath);
 
     if (!xml) {
       return {
         Types: {
           $: { xmlns: this.ns },
           Default: [],
-          Override: []
-        }
+          Override: [],
+        },
       };
     }
 
     const parsed = await parseXml(xml);
 
     // Normalize arrays
-    parsed.Types.Default = Array.isArray(parsed.Types.Default) ? parsed.Types.Default : [parsed.Types.Default].filter(Boolean);
-    parsed.Types.Override = Array.isArray(parsed.Types.Override) ? parsed.Types.Override : [parsed.Types.Override].filter(Boolean);
+    parsed.Types.Default = Array.isArray(parsed.Types.Default)
+      ? parsed.Types.Default
+      : [parsed.Types.Default].filter(Boolean);
+    parsed.Types.Override = Array.isArray(parsed.Types.Override)
+      ? parsed.Types.Override
+      : [parsed.Types.Override].filter(Boolean);
 
     return parsed as ContentTypesXml;
   }
@@ -80,8 +85,8 @@ export class ContentTypesManager {
    * Writes back the [Content_Types].xml into the zip
    */
   private async writeTypes(obj: ContentTypesXml): Promise<void> {
-    const xml = buildXml(obj.Types, { headless: false, pretty: true, rootName : "Types" });
-    this.zip.addFile(this.filePath, xml);
+    const xml = buildXml(obj.Types, { headless: false, pretty: true, rootName: "Types" });
+    this.zip.addFile(this.filePath, Buffer.from(xml, "utf-8"));
   }
 
   /**
@@ -91,10 +96,10 @@ export class ContentTypesManager {
   async addDefault(extension: string, contentType: string): Promise<void> {
     const typesObj = await this.readTypes();
 
-    const exists = typesObj.Types.Default.some(d => d.$.Extension === extension);
+    const exists = typesObj.Types.Default.some((d) => d.$.Extension === extension);
     if (!exists) {
       typesObj.Types.Default.push({
-        $: { Extension: extension, ContentType: contentType }
+        $: { Extension: extension, ContentType: contentType },
       });
       await this.writeTypes(typesObj);
       logger.info(`Added Default content type for extension: ${extension}`);
@@ -111,13 +116,13 @@ export class ContentTypesManager {
     const typesObj = await this.readTypes();
     const overrides = typesObj.Types.Override;
 
-    const exists = overrides.some(o => o.$.PartName === partName);
+    const exists = overrides.some((o) => o.$.PartName === partName);
     if (!exists) {
       overrides.push({
         $: {
           PartName: partName,
-          ContentType: contentType
-        }
+          ContentType: contentType,
+        },
       });
 
       await this.writeTypes(typesObj);
@@ -130,7 +135,7 @@ export class ContentTypesManager {
    */
   async removeOverride(partName: string): Promise<void> {
     const typesObj = await this.readTypes();
-    typesObj.Types.Override = typesObj.Types.Override.filter(o => o.$.PartName !== partName);
+    typesObj.Types.Override = typesObj.Types.Override.filter((o) => o.$.PartName !== partName);
 
     await this.writeTypes(typesObj);
     logger.info(`Removed Override for part: ${partName}`);
@@ -141,13 +146,13 @@ export class ContentTypesManager {
    */
   async hasOverride(partName: string): Promise<boolean> {
     const typesObj = await this.readTypes();
-    return typesObj.Types.Override.some(o => o.$.PartName === partName);
+    return typesObj.Types.Override.some((o) => o.$.PartName === partName);
   }
 
   /**
    * Helper to create a new unique part name with GUID
    */
-  generateUniquePartName(prefix: string, extension = 'xml'): string {
+  generateUniquePartName(prefix: string, extension = "xml"): string {
     return `/${prefix}/${this.generateGuid()}.${extension}`;
   }
 }

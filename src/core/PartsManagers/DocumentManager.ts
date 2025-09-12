@@ -1,16 +1,17 @@
-import { ZipManager } from "@/utils/ZipManager";
 import * as XmlUtils from "@/utils/xmlUtils";
+import AdmZip from "adm-zip";
 
 // DocumentManager.ts - auto generated file
 export default class DocumentManager {
-  zip: ZipManager;
-  constructor(zip: ZipManager) {
+  zip: AdmZip;
+  constructor(zip: AdmZip) {
     this.zip = zip;
   }
 
   private async addHeaderReferenceToDocument(relId: string) {
     const docPath = "word/document.xml";
-    const xml = this.zip.getFileAsString(docPath);
+
+    const xml = this.zip.readAsText(docPath);
     if (!xml) return;
 
     const docObj = await XmlUtils.parseXml(xml);
@@ -48,6 +49,6 @@ export default class DocumentManager {
       pretty: true,
     });
 
-    this.zip.addFile(docPath, newDocXml);
+    this.zip.addFile(docPath, Buffer.from(newDocXml, "utf-8"));
   }
 }

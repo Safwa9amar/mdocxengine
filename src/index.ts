@@ -5,6 +5,9 @@ import FooterManager from "@/core/PartsManagers/FooterManager";
 import HeaderManager from "./core/PartsManagers/HeaderManager";
 import RootRelManager from "./core/PartsManagers/RootRelManager";
 import { RelManager } from "./core/PartsManagers/RelManager";
+import dotenv from "dotenv";
+dotenv.config();
+
 class Mdocxengine {
   zip: ZipManager;
   rels: RelManager;
