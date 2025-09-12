@@ -13,7 +13,7 @@ dotenv.config();
 let zip: AdmZip;
 let header: HeaderManager;
 let res;
-const ai = new GoogleGenAI({
+export const AI = new GoogleGenAI({
   apiKey: process.env.GOOGLE_API_KEY,
 });
 
@@ -28,7 +28,7 @@ describe("HeaderManager", () => {
     let regex = /<w:t>(.*?)<\/w:t>/g;
     let text = doc.match(regex)?.map((text) => text.replace("<w:t>", "").replace("</w:t>", ""));
 
-    res = await ai.models.generateContent({
+    res = await AI.models.generateContent({
       model: "gemini-2.5-flash",
       contents: `
          get all headres and main title from this txt ${text?.toString()} 

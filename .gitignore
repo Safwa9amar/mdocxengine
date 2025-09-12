@@ -3,8 +3,8 @@ node_modules
 .js
 .d.ts
 .vscode
-extracted
-outputs
+samples/extracted
+samples/outputs
 coverage
 dist
 logs

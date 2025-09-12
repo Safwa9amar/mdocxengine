@@ -16,9 +16,12 @@ export type ParagraphContent = Run | Hyperlink | Field | Drawing;
 export interface Run {
   $: { "w:rsidRPr": string };
   "w:rPr"?: RunProperties;
-  "w:t": string;
+  // Use this if xml:space is required, otherwise simple string is fine
+  "w:t": {
+    $: { "xml:space"?: "preserve" };
+    _: string;
+  };
 }
-
 /**
  * Represents a drawing element.
  * A drawing object (e.g., a chart or picture) located in a run.
@@ -105,9 +108,11 @@ export interface Hyperlink {
   $: {
     "w:anchor"?: string;
     "w:history"?: string;
-    "r:id"?: string; // Relationship ID for external hyperlinks
+    "r:id"?: string;
   };
-  "w:r": Run;
+  // A hyperlink can contain multiple runs, fields, etc.
+  "w:r"?: Run[];
+  "w:fldChar"?: Field[];
 }
 
 /**
@@ -151,18 +156,20 @@ interface ParagraphProperties {
  * </w:p>
  */
 export interface Paragraph {
-  "w:p": {
-    $: {
-      //   "w14:paraId": string;
-      //   "w14:textId": string;
-      //   "w:rsidR": string;
-      //   "w:rsidRPr": string;
-      //   "w:rsidRDefault": string;
-      //   "w:rsidP": "00925150";
-      [Key: string]: string; // Attributes for the paragraph element, like w:rsidR
-    };
-    "w:pPr"?: ParagraphProperties;
-    "w:hyperlink"?: Hyperlink;
-    "w:r"?: Run;
+  $: {
+    "w14:paraId"?: string;
+    "w14:textId"?: string;
+    "w:rsidR"?: string;
+    // Add other attributes as needed
+    [key: string]: string | undefined;
   };
+  "w:pPr"?: ParagraphProperties;
+  // The content of a paragraph can be a mix of elements.
+  // This is a simplified representation to avoid a complex type union.
+  // A full implementation would need to handle the mixed nature more accurately.
+  // A common approach is to use a single "children" array.
+  "w:r"?: Run[];
+  "w:hyperlink"?: Hyperlink[];
+  "w:fldChar"?: Field[];
+  "w:drawing"?: Drawing[];
 }
