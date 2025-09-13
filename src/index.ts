@@ -1,5 +1,5 @@
 import { ZipManager } from "./utils/ZipManager";
-import { ContentTypesManager } from "../tests/ContentTypesManager";
+import { ContentTypesManager } from "./core/PartsManagers/ContentTypesManager";
 import DocumentManager from "./core/PartsManagers/DocumentManager";
 import FooterManager from "@/core/PartsManagers/FooterManager";
 import HeaderManager from "./core/PartsManagers/HeaderManager";

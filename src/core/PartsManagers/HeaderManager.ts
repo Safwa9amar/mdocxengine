@@ -1,6 +1,6 @@
 import * as XmlUtils from "@/utils/xmlUtils";
 import { RelManager } from "@/core/PartsManagers/RelManager";
-import { ContentTypesManager } from "../../../tests/ContentTypesManager";
+import { ContentTypesManager } from "./ContentTypesManager";
 import AdmZip from "adm-zip";
 import { HeaderFile } from "@/constants";
 

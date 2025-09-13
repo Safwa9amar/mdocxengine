@@ -2,7 +2,8 @@ import { Hyperlink, Paragraph as ParagraphInterface, Run } from "@/core/files/pa
 import { extractParaIds } from "@/helpers";
 import { buildXml, parseXml } from "@/utils/xmlUtils";
 import AdmZip from "adm-zip";
-import { Builder } from "xml2js";
+import { Builder, parseString } from "xml2js";
+import { DOMParser, XMLSerializer } from "xmldom";
 
 /**
  * A class representing a single paragraph from a WordprocessingML document.
@@ -20,6 +21,37 @@ class Paragraph {
     if (!this.paragraph || !this.paragraph) {
       throw new Error("Invalid paragraph XML: 'w:p' element is missing.");
     }
+  }
+
+  public getParagraphById() {}
+
+  public insertParagraph(parsedXml: string, newParagraphXml: string, position: number) {
+    const parser = new DOMParser();
+    const serializer = new XMLSerializer();
+
+    // Parse the main document XML
+    const doc = parser.parseFromString(parsedXml, "application/xml");
+
+    // Get the <w:body>
+    const body = doc.getElementsByTagName("w:body")[0];
+    if (!body) throw new Error("<w:body> not found!");
+
+    // Parse the new paragraph separately
+    const newParagraphNode = parser.parseFromString(
+      newParagraphXml,
+      "application/xml"
+    ).documentElement;
+
+    // Insert at the desired position
+    const paragraphs = body.getElementsByTagName("w:p");
+
+    if (position >= paragraphs.length) {
+      body.appendChild(newParagraphNode); // Append at the end
+    } else {
+      body.insertBefore(newParagraphNode, paragraphs[position]);
+    }
+
+    return serializer.serializeToString(doc);
   }
 
   /**
@@ -127,20 +159,6 @@ class Paragraph {
       p["w:r"] = [newRun];
     }
   }
-  /**
-   * Converts the internal paragraph object back into an XML string.
-   * @returns A Promise that resolves with the XML string.
-   */
-  public async toXml(): Promise<string> {
-    const builder = new Builder({
-      headless: true,
-    });
-    return builder.buildObject(this.paragraph);
-  }
-
-  public getParagraphById() {}
-  public insterTextBefore() {}
-  public insterTextAfter() {}
 
   // create unique paragraph id based on given document
   public generateUniqueParaId(zip: AdmZip): string {
@@ -164,6 +182,16 @@ class Paragraph {
     paraId = newId.toString(16).toUpperCase().padStart(8, "0");
 
     return paraId;
+  }
+  /**
+   * Converts the internal paragraph object back into an XML string.
+   * @returns A Promise that resolves with the XML string.
+   */
+  public async toXml(): Promise<string> {
+    const builder = new Builder({
+      headless: true,
+    });
+    return builder.buildObject(this.paragraph);
   }
 }
 

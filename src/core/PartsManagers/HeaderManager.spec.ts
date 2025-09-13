@@ -13,7 +13,7 @@ dotenv.config();
 let zip: AdmZip;
 let header: HeaderManager;
 let res;
-export const AI = new GoogleGenAI({
+const AI = new GoogleGenAI({
   apiKey: process.env.GOOGLE_API_KEY,
 });
 
