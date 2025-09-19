@@ -1,9 +1,8 @@
 import { Hyperlink, Paragraph as ParagraphInterface, Run } from "@/core/files/paragraph/types";
 import { extractParaIds } from "@/helpers";
-import { buildXml, parseXml } from "@/utils/xmlUtils";
+import { parseXml } from "@/utils/xmlUtils";
 import AdmZip from "adm-zip";
-import { Builder, parseString } from "xml2js";
-import { DOMParser, XMLSerializer } from "xmldom";
+import { Builder } from "xml2js";
 
 /**
  * A class representing a single paragraph from a WordprocessingML document.
@@ -22,36 +21,362 @@ class Paragraph {
       throw new Error("Invalid paragraph XML: 'w:p' element is missing.");
     }
   }
+  /**
+   * Extracts plain text from a Word paragraph XML string and checks if it contains any text.
+   * - If no `<w:t>` tags exist or they're empty, it returns `hasText = false` and `text = ""`.
+   * - Otherwise, it returns the combined text and `hasText = true`.
+   *
+   * @param paragraphXml - Optional raw XML string of the <w:p> element. If not provided, it uses this.toXml().
+   * @returns An object containing the extracted text and a boolean flag.
+   */
+  public async getPlainText(paragraphXml?: string): Promise<{ hasText: boolean; text: string }> {
+    // Load the XML string
 
-  public getParagraphById() {}
+    const xml = paragraphXml || (await this.toXml());
+    // Regex to match <w:t>...</w:t> blocks
 
-  public insertParagraph(parsedXml: string, newParagraphXml: string, position: number) {
-    const parser = new DOMParser();
-    const serializer = new XMLSerializer();
+    const matches = xml.match(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>/g);
 
-    // Parse the main document XML
-    const doc = parser.parseFromString(parsedXml, "application/xml");
-
-    // Get the <w:body>
-    const body = doc.getElementsByTagName("w:body")[0];
-    if (!body) throw new Error("<w:body> not found!");
-
-    // Parse the new paragraph separately
-    const newParagraphNode = parser.parseFromString(
-      newParagraphXml,
-      "application/xml"
-    ).documentElement;
-
-    // Insert at the desired position
-    const paragraphs = body.getElementsByTagName("w:p");
-
-    if (position >= paragraphs.length) {
-      body.appendChild(newParagraphNode); // Append at the end
-    } else {
-      body.insertBefore(newParagraphNode, paragraphs[position]);
+    // If no matches found, return empty result
+    if (!matches) {
+      return { hasText: false, text: "" };
     }
 
-    return serializer.serializeToString(doc);
+    // Extract, trim, and join the inner text
+    const textContent = matches
+      .map((match) => match.replace(/<\/?w:t\b[^>]*>/g, "")) // remove <w:t> tags
+      .join("")
+      .trim();
+
+    return {
+      hasText: textContent.length > 0 ? true : false,
+      text: textContent,
+    };
+  }
+  /**
+   * Safely extracts visible text from a Word paragraph (<w:p>),
+   * handling nested structures like hyperlinks, bookmarks, and tabs.
+   *
+   * @param paragraphXml Optional XML string of the paragraph.
+   * @returns Object with a boolean (hasText) and the combined text string.
+   */
+  public async getPlainTextSafe(): Promise<{ hasText: boolean; text: string }> {
+    const parsed = this.paragraph;
+
+    // Helper function to recursively extract text
+    const extractText = (node: any): string => {
+      if (!node || typeof node !== "object") return "";
+
+      let result = "";
+
+      // 1. Handle runs <w:r>
+      if (Array.isArray(node["w:r"])) {
+        for (const run of node["w:r"]) {
+          result += extractText(run);
+        }
+      }
+
+      // 2. Handle text <w:t>
+      if (node["w:t"]) {
+        const t = node["w:t"];
+        if (typeof t === "string") {
+          result += t;
+        } else if (typeof t._ === "string") {
+          result += t._;
+        }
+      }
+
+      // 3. Handle tabs <w:tab> and line breaks <w:br>
+      if (node["w:tab"]) {
+        result += "\t"; // add tab
+      }
+      if (node["w:br"]) {
+        result += "\n"; // add line break
+      }
+
+      // 4. Handle hyperlinks <w:hyperlink>
+      if (Array.isArray(node["w:hyperlink"])) {
+        for (const link of node["w:hyperlink"]) {
+          result += extractText(link); // recurse into hyperlink children
+        }
+      }
+
+      // 5. Handle any other nested children
+      for (const key in node) {
+        if (node.hasOwnProperty(key)) {
+          const child = node[key];
+
+          if (Array.isArray(child)) {
+            for (const c of child) {
+              result += extractText(c);
+            }
+          } else {
+            result += extractText(child);
+          }
+        }
+      }
+
+      return result;
+    };
+
+    const text = extractText(parsed || {}).trimEnd();
+    return { hasText: text.length > 0, text };
+  }
+
+  /**
+   * Recursively extracts text from any node including nested structures.
+   */
+  private extractTextFromNode(node: any): string {
+    if (!node || typeof node !== "object") return "";
+
+    let text = "";
+
+    for (const key of Object.keys(node)) {
+      const value = node[key];
+
+      if (key === "w:t" && typeof value === "string") {
+        text += value;
+      } else if (Array.isArray(value)) {
+        for (const child of value) {
+          text += this.extractTextFromNode(child);
+        }
+      } else if (typeof value === "object") {
+        text += this.extractTextFromNode(value);
+      }
+    }
+    return text;
+  }
+
+  /**
+   * Appends new text to the paragraph without removing existing runs.
+   * @param text - The text to append.
+   */
+  public appendText(text: string): void {
+    const newRun: Run = {
+      $: { "w:rsidRPr": this.paragraph?.$?.["w:rsidRPr"] || "" },
+      "w:rPr": this.paragraph["w:pPr"]?.["w:rPr"] || {},
+      "w:t": { _: text, $: {} },
+    };
+
+    if (!this.paragraph["w:r"]) {
+      this.paragraph["w:r"] = [];
+    }
+    this.paragraph["w:r"].push(newRun);
+  }
+  /**
+   * Recursively replaces text inside a paragraph without removing hyperlinks or nested structures.
+   *
+   * @param searchText - Text to search for. If null, replace all text.
+   * @param replaceText - Text to replace with.
+   */
+  public replaceText(searchText: string | null, replaceText: string): void {
+    const p = this.paragraph;
+
+    const recursiveReplace = (node: any) => {
+      if (Array.isArray(node)) {
+        node.forEach(recursiveReplace);
+      } else if (typeof node === "object" && node !== null) {
+        // If this is a text node <w:t>
+        if (node["w:t"]) {
+          const textNode = node["w:t"];
+          if (typeof textNode === "string") {
+            node["w:t"] = searchText
+              ? textNode.replace(new RegExp(searchText, "g"), replaceText)
+              : replaceText;
+          } else if (typeof textNode._ === "string") {
+            textNode._ = searchText
+              ? textNode._.replace(new RegExp(searchText, "g"), replaceText)
+              : replaceText;
+          }
+        }
+
+        // Recursively process all children
+        for (const key in node) {
+          if (node.hasOwnProperty(key) && key !== "w:t") {
+            recursiveReplace(node[key]);
+          }
+        }
+      }
+    };
+
+    recursiveReplace(p);
+  }
+
+  /**
+   * Sets the paragraph alignment.
+   * @param alignment - One of "left" | "center" | "right" | "both"
+   */
+  public setAlignment(alignment: "left" | "center" | "right" | "both"): void {
+    if (!this.paragraph["w:pPr"]) {
+      this.paragraph["w:pPr"] = {};
+    }
+    this.paragraph["w:pPr"]["w:jc"] = { $: { "w:val": alignment } };
+  }
+
+  /**
+   * Gets the current alignment of the paragraph.
+   */
+  public getAlignment(): string | null {
+    return this.paragraph["w:pPr"]?.["w:jc"]?.$?.["w:val"] || null;
+  }
+
+  /**
+   * Returns the total number of words in the paragraph.
+   */
+  public async getWordCount(): Promise<number> {
+    const { text } = await this.getPlainText();
+    return text.split(/\s+/).filter(Boolean).length;
+  }
+
+  /**
+   * Applies a style to the entire paragraph.
+   * @param styleId - The Word style ID (e.g., "Heading1", "Normal").
+   */
+  public applyStyle(styleId: string): void {
+    if (!this.paragraph["w:pPr"]) {
+      this.paragraph["w:pPr"] = {};
+    }
+    this.paragraph["w:pPr"]["w:pStyle"] = { $: { "w:val": styleId } };
+  }
+  /**
+   * Removes all formatting (bold, italic, etc.) from runs but keeps text.
+   */
+  public removeFormatting(): void {
+    const strip = (run: Run) => {
+      run["w:rPr"] = {}; // Clear formatting
+    };
+
+    (this.paragraph["w:r"] || []).forEach(strip);
+    if (Array.isArray(this.paragraph["w:hyperlink"])) {
+      this.paragraph["w:hyperlink"].forEach((link) => {
+        (link["w:r"] || []).forEach(strip);
+      });
+    }
+  }
+  /**
+   * Creates a deep clone of the paragraph object.
+   */
+  public clone(): Paragraph {
+    const cloneData = JSON.parse(JSON.stringify(this.paragraph));
+    return new Paragraph(cloneData);
+  }
+
+  /**
+   * Merges another paragraph's runs into this one.
+   * @param otherParagraph - The paragraph to merge into this one.
+   */
+  public mergeWith(otherParagraph: Paragraph): void {
+    const otherRuns = otherParagraph.paragraph["w:r"] || [];
+    if (!this.paragraph["w:r"]) {
+      this.paragraph["w:r"] = [];
+    }
+    this.paragraph["w:r"].push(...otherRuns);
+  }
+  /**
+   * Splits the paragraph into two at the specified character index.
+   * @param index - Character position to split at.
+   * @returns A tuple: [firstPart, secondPart]
+   */
+  public async splitAt(index: number): Promise<[Paragraph, Paragraph]> {
+    const { text } = await this.getPlainText();
+
+    const firstText = text.slice(0, index);
+    const secondText = text.slice(index);
+
+    const first = this.clone();
+    const second = this.clone();
+
+    first.modifyText(firstText);
+    second.modifyText(secondText);
+
+    return [first, second];
+  }
+
+  /**
+   * Adds a new hyperlink to the paragraph.
+   * @param url - The URL of the hyperlink.
+   * @param displayText - The visible text for the hyperlink.
+   */
+  public addHyperlink(url: string, displayText: string, rsidRPr: string): void {
+    const newLink: Hyperlink = {
+      $: { "r:id": url },
+      "w:r": [
+        {
+          $: {
+            "w:rsidRPr": rsidRPr,
+          },
+          "w:rPr": {},
+          "w:t": { _: displayText, $: {} },
+        },
+      ],
+    };
+
+    if (!this.paragraph["w:hyperlink"]) {
+      this.paragraph["w:hyperlink"] = [];
+    }
+
+    if (!Array.isArray(this.paragraph["w:hyperlink"])) {
+      this.paragraph["w:hyperlink"] = [this.paragraph["w:hyperlink"]];
+    }
+
+    this.paragraph["w:hyperlink"].push(newLink);
+  }
+  /**
+   * Extracts all hyperlinks inside the paragraph.
+   * Returns array of { displayText, url }.
+   */
+  public async getHyperlinks(): Promise<{ displayText: string; url: string }[]> {
+    const parsed = this.paragraph;
+    const links: { displayText: string; url: string }[] = [];
+
+    const traverse = (node: any) => {
+      if (!node) return;
+
+      if (node["w:hyperlink"]) {
+        const hyperlinks = Array.isArray(node["w:hyperlink"])
+          ? node["w:hyperlink"]
+          : [node["w:hyperlink"]];
+
+        for (const link of hyperlinks) {
+          const displayText = this.extractTextFromNode(link);
+          const url = link["$"]?.["r:id"] || ""; // `r:id` links to relationships
+          links.push({ displayText, url });
+        }
+      }
+
+      // Recursively search children
+      for (const key of Object.keys(node)) {
+        const value = node[key];
+        if (typeof value === "object") {
+          traverse(value);
+        }
+      }
+    };
+
+    traverse(parsed);
+    return links;
+  }
+  /**
+   * Removes all hyperlinks but keeps the visible text.
+   */
+  public removeHyperlinks(): void {
+    if (!this.paragraph["w:hyperlink"]) return;
+
+    const plainRuns: Run[] = [];
+    const extractRuns = (runs: Run | Run[] | undefined) =>
+      Array.isArray(runs) ? runs : runs ? [runs] : [];
+
+    const hyperlinks = Array.isArray(this.paragraph["w:hyperlink"])
+      ? this.paragraph["w:hyperlink"]
+      : [this.paragraph["w:hyperlink"]];
+
+    hyperlinks.forEach((link) => {
+      plainRuns.push(...extractRuns(link["w:r"]));
+    });
+
+    // Merge with existing runs
+    this.paragraph["w:r"] = [...(this.paragraph["w:r"] || []), ...plainRuns];
+    this.paragraph["w:hyperlink"] = [];
   }
 
   /**
@@ -63,49 +388,58 @@ class Paragraph {
     const parsedParagraph = await parseXml(xmlString);
     return new Paragraph(parsedParagraph);
   }
-
   /**
-   * Gets the combined text content of the paragraph by recursively
-   * iterating through all child elements (runs, hyperlinks, etc.) and
-   * extracting the text from `w:t` elements.
-   * @returns The full text content of the paragraph as a single string.
+   * Returns all highlighted runs in the current paragraph, optionally filtered by fill and value.
+   *
+   * @param {string} [fill] - Optional. Filter by highlight fill color (e.g., "FFFF00").
+   * @param {string} [value] - Optional. Filter by shading value (e.g., "clear").
+   * @returns {Run[] | false} - Array of highlighted runs or false if none found.
    */
-  public getText(): string {
-    let fullText = "";
-    const p = this.paragraph;
-    /**
-     * Helper function to extract text from a given node.
-     * @param node The XML node to traverse.
-     */
-    const extractText = (node: any) => {
-      // Check if the node is a text run element
-      if (node && node["w:t"]) {
-        // Concatenate the text, handling arrays and single values
-        if (Array.isArray(node["w:t"])) {
-          fullText += node["w:t"].join("");
-        } else if (typeof node["w:t"] === "string") {
-          fullText += node["w:t"];
-        }
-      }
+  public getHighlightedRuns(fill?: string, value: string = "clear"): Run[] | false {
+    const runArray: Run[] = [];
 
-      // Check for nested children that could contain text
-      for (const key in node) {
-        if (typeof node[key] === "object") {
-          if (Array.isArray(node[key])) {
-            node[key].forEach(extractText);
-          } else {
-            extractText(node[key]);
-          }
-        }
+    // Helper function to push runs safely
+    const pushRuns = (runs: Run | Run[] | undefined) => {
+      if (Array.isArray(runs)) {
+        runArray.push(...runs);
+      } else if (runs) {
+        runArray.push(runs);
       }
     };
 
-    // Start extraction from the paragraph element
-    if (p) {
-      extractText(p);
+    // Collect runs directly under the paragraph
+    pushRuns(this.paragraph["w:r"]);
+
+    // Collect runs inside hyperlinks
+    const hyperlinks = this.paragraph["w:hyperlink"];
+    if (Array.isArray(hyperlinks)) {
+      hyperlinks.forEach((link) => pushRuns(link["w:r"]));
+    } else if (hyperlinks) {
+      pushRuns(hyperlinks["w:r"]);
     }
 
-    return fullText;
+    // Filter highlighted runs
+    const highlightedRuns = runArray.filter((run) => {
+      const shd = run?.["w:rPr"]?.["w:shd"];
+      if (!shd || !shd.$) return false;
+
+      const runFill = shd.$["w:fill"];
+      const runValue = shd.$["w:val"];
+
+      // Check optional filters
+      if (fill && runFill !== fill) return false;
+      if (value && runValue !== value) return false;
+
+      return true; // Run matches highlight criteria
+    });
+
+    return highlightedRuns.length ? highlightedRuns : false;
+  }
+  /**
+   * Returns true if any run in the paragraph is highlighted.
+   */
+  public hasHighlight(): boolean {
+    return !!this.getHighlightedRuns();
   }
 
   /**
@@ -127,7 +461,7 @@ class Paragraph {
     // Create a new Run with the updated text
     const newRun: Run = {
       $: { "w:rsidRPr": p?.$?.["w:rsidRPr"] || "" },
-      "w:rPr": p?.["w:pPr"]?.["w:rPr"] || {},
+      "w:rPr": p["w:pPr"]?.["w:rPr"] || {},
       "w:t": { _: newText, $: {} },
     };
 
@@ -183,6 +517,18 @@ class Paragraph {
 
     return paraId;
   }
+  /**
+   * Detects the primary language of the paragraph (if available).
+   */
+  public detectLanguage(): string | null {
+    const runs = this.paragraph["w:r"] || [];
+    for (const run of runs) {
+      const lang = run?.["w:rPr"]?.["w:lang"]?.$?.["w:val"];
+      if (lang) return lang;
+    }
+    return null;
+  }
+
   /**
    * Converts the internal paragraph object back into an XML string.
    * @returns A Promise that resolves with the XML string.

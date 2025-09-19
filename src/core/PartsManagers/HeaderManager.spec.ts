@@ -20,7 +20,7 @@ const AI = new GoogleGenAI({
 describe("HeaderManager", () => {
   // ✅ Load resources before tests
   beforeAll(async () => {
-    zip = new AdmZip("./samples/مذكرة فتيحة حساني.docx");
+    zip = new AdmZip("./samples/Document (4).docx");
     header = new HeaderManager(zip);
     let header1 = await parseXml(header.headers[0].xml);
 
@@ -32,7 +32,7 @@ describe("HeaderManager", () => {
       model: "gemini-2.5-flash",
       contents: `
          get all headres and main title from this txt ${text?.toString()} 
-         than enhance headers and add chapters name and  nested numbring based on chapter and header , subheader  
+         than enhance headers and add chapters (Chapter I , Chapter II)  and  nested numbring based on chapter and header , subheader  
          get only important and main titles, remove unnecessary title
          and create a table content based on all items
       `,

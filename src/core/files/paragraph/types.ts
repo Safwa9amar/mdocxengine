@@ -1,27 +1,86 @@
 // A Union type to represent the content of a paragraph, which can be a Run or a Hyperlink.
 export type ParagraphContent = Run | Hyperlink | Field | Drawing;
+/**
+ * Represents a text run in the document.
+ * A run is a region of text with a common set of properties, such as formatting,
+ * inline elements like breaks, tabs, fields, and drawings.
+ *
+ * @example
+ * <w:r>
+ *   <w:rPr>
+ *     <w:b/>
+ *     <w:i/>
+ *   </w:rPr>
+ *   <w:t xml:space="preserve">quick</w:t>
+ *   <w:br/>
+ *   <w:tab/>
+ * </w:r>
+ */
+/**
+ * Represents a single text node inside a run.
+ */
+export interface TextNode {
+  $?: { "xml:space"?: "preserve" };
+  _: string;
+}
 
 /**
  * Represents a text run in the document.
- * A run is a region of text with a common set of properties, such as formatting.
- * @example
- * <w:r>
- * <w:rPr>
- * <w:b/>
- * <w:i/>
- * </w:rPr>
- * <w:t>quick</w:t>
- * </w:r>
+ * A run may contain text, tabs, breaks, fields, and drawings.
  */
 export interface Run {
-  $: { "w:rsidRPr": string };
+  $?: {
+    "w:rsidRPr"?: string; // Optional revision ID for run properties
+    "w:rsidR"?: string; // Optional revision ID for run
+    [key: string]: string | undefined;
+  };
+
+  /**
+   * Run-level properties defining style and formatting.
+   */
   "w:rPr"?: RunProperties;
-  // Use this if xml:space is required, otherwise simple string is fine
-  "w:t": {
-    $: { "xml:space"?: "preserve" };
-    _: string;
+
+  /**
+   * Text nodes inside the run.
+   * Some runs have multiple <w:t> tags if Word splits the text.
+   */
+  "w:t"?: TextNode | TextNode[] | string;
+
+  /**
+   * Line breaks inside a run.
+   * <w:br/>
+   */
+  "w:br"?: Record<string, unknown> | Record<string, unknown>[];
+
+  /**
+   * Tab characters inside a run.
+   * <w:tab/>
+   */
+  "w:tab"?: Record<string, unknown> | Record<string, unknown>[];
+
+  /**
+   * Dynamic fields or special instructions.
+   * <w:instrText xml:space="preserve">PAGE</w:instrText>
+   */
+  "w:instrText"?: TextNode | TextNode[];
+
+  /**
+   * Drawings or images inside a run.
+   * <w:drawing>...</w:drawing>
+   */
+  "w:drawing"?: Drawing | Drawing[];
+
+  /**
+   * A single field character, not a whole Field object
+   * Example: <w:fldChar w:fldCharType="begin"/>
+   */
+  "w:fldChar"?: {
+    $: {
+      "w:fldCharType": "begin" | "end";
+    };
   };
 }
+
 /**
  * Represents a drawing element.
  * A drawing object (e.g., a chart or picture) located in a run.
@@ -64,7 +123,7 @@ export interface Field {
  * Interface for the properties of a text run.
  * These properties define the formatting for the run's content.
  */
-interface RunProperties {
+export interface RunProperties {
   "w:rStyle"?: {
     $: {
       "w:val": string;
@@ -91,7 +150,21 @@ interface RunProperties {
     $: {
       "w:val": string;
     };
+    "w:sh": {
+      // shading
+      $: {
+        "w:fill": string;
+        "w:val": string;
+      };
+    };
   }; // Underline formatting
+  // <w:shd w:fill="BF819E" w:val="clear" />
+  "w:shd"?: {
+    $: {
+      "w:fill": string;
+      "w:val": string;
+    };
+  };
 }
 
 /**
@@ -122,7 +195,7 @@ export interface Hyperlink {
 interface ParagraphProperties {
   "w:pStyle"?: {
     $: {
-      "w:val": string;
+      "w:val": string; // ex : heading 21
     };
   };
   "w:tabs"?: {
@@ -130,6 +203,11 @@ interface ParagraphProperties {
   };
   "w:spacing"?: {
     // Specific properties for line and paragraph spacing.
+  };
+  "w:jc"?: {
+    $: {
+      "w:val": string;
+    };
   };
   /**
    * Represents the default run properties for the paragraph mark.
