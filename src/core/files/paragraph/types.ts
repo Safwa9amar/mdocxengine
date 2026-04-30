@@ -195,7 +195,7 @@ export interface Hyperlink {
 interface ParagraphProperties {
   "w:pStyle"?: {
     $: {
-      "w:val": string; // ex : heading 21
+      "w:val": string;
     };
   };
   "w:tabs"?: {
@@ -208,6 +208,10 @@ interface ParagraphProperties {
     $: {
       "w:val": string;
     };
+  };
+  "w:numPr"?: {
+    "w:ilvl"?: { $: { "w:val": string } };
+    "w:numId"?: { $: { "w:val": string } };
   };
   /**
    * Represents the default run properties for the paragraph mark.

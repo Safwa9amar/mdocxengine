@@ -35,21 +35,19 @@ export class RelManager {
    */
   async addRelationship(id: string, type: string, target: string) {
     const relsObj = await this.readRels();
-    // ensure array structure
-    const rels = relsObj;
 
     if (!relsObj.Relationships) {
-      rels.Relationship = [];
-    } else if (!Array.isArray(rels.Relationships.Relationship)) {
-      rels.Relationship = [rels.Relationship];
+      relsObj.Relationships = { $: { xmlns: this.ns } };
     }
 
-    rels.Relationships.Relationship.push({
-      $: {
-        Id: id,
-        Type: type,
-        Target: target,
-      },
+    if (!relsObj.Relationships.Relationship) {
+      relsObj.Relationships.Relationship = [];
+    } else if (!Array.isArray(relsObj.Relationships.Relationship)) {
+      relsObj.Relationships.Relationship = [relsObj.Relationships.Relationship];
+    }
+
+    relsObj.Relationships.Relationship.push({
+      $: { Id: id, Type: type, Target: target },
     });
 
     await this.writeRels(relsObj.Relationships);

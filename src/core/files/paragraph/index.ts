@@ -1,4 +1,5 @@
-import { Hyperlink, Paragraph as ParagraphInterface, Run } from "@/core/files/paragraph/types";
+import { Hyperlink, Paragraph as ParagraphInterface, Run as RunInterface, RunProperties } from "@/core/files/paragraph/types";
+import { Run } from "@/core/files/paragraph/Run";
 import { extractParaIds } from "@/helpers";
 import { parseXml } from "@/utils/xmlUtils";
 import AdmZip from "adm-zip";
@@ -152,7 +153,7 @@ class Paragraph {
    * @param text - The text to append.
    */
   public appendText(text: string): void {
-    const newRun: Run = {
+    const newRun: RunInterface = {
       $: { "w:rsidRPr": this.paragraph?.$?.["w:rsidRPr"] || "" },
       "w:rPr": this.paragraph["w:pPr"]?.["w:rPr"] || {},
       "w:t": { _: text, $: {} },
@@ -242,7 +243,7 @@ class Paragraph {
    * Removes all formatting (bold, italic, etc.) from runs but keeps text.
    */
   public removeFormatting(): void {
-    const strip = (run: Run) => {
+    const strip = (run: RunInterface) => {
       run["w:rPr"] = {}; // Clear formatting
     };
 
@@ -362,8 +363,8 @@ class Paragraph {
   public removeHyperlinks(): void {
     if (!this.paragraph["w:hyperlink"]) return;
 
-    const plainRuns: Run[] = [];
-    const extractRuns = (runs: Run | Run[] | undefined) =>
+    const plainRuns: RunInterface[] = [];
+    const extractRuns = (runs: RunInterface | RunInterface[] | undefined) =>
       Array.isArray(runs) ? runs : runs ? [runs] : [];
 
     const hyperlinks = Array.isArray(this.paragraph["w:hyperlink"])
@@ -395,11 +396,11 @@ class Paragraph {
    * @param {string} [value] - Optional. Filter by shading value (e.g., "clear").
    * @returns {Run[] | false} - Array of highlighted runs or false if none found.
    */
-  public getHighlightedRuns(fill?: string, value: string = "clear"): Run[] | false {
-    const runArray: Run[] = [];
+  public getHighlightedRuns(fill?: string, value: string = "clear"): RunInterface[] | false {
+    const runArray: RunInterface[] = [];
 
     // Helper function to push runs safely
-    const pushRuns = (runs: Run | Run[] | undefined) => {
+    const pushRuns = (runs: RunInterface | RunInterface[] | undefined) => {
       if (Array.isArray(runs)) {
         runArray.push(...runs);
       } else if (runs) {
@@ -459,7 +460,7 @@ class Paragraph {
     p["w:hyperlink"] = [];
 
     // Create a new Run with the updated text
-    const newRun: Run = {
+    const newRun: RunInterface = {
       $: { "w:rsidRPr": p?.$?.["w:rsidRPr"] || "" },
       "w:rPr": p["w:pPr"]?.["w:rPr"] || {},
       "w:t": { _: newText, $: {} },
@@ -471,7 +472,7 @@ class Paragraph {
       const originalHyperlink = p["w:hyperlink"][0];
       const originalRun = originalHyperlink["w:r"]?.[0]; // Get the first Run from the array
 
-      const newRun: Run = {
+      const newRun: RunInterface = {
         // Safely access the $ property of the first run.
         $: originalRun?.$ || { "w:rsidRPr": "" },
         // Safely access the w:rPr property of the first run.
@@ -527,6 +528,40 @@ class Paragraph {
       if (lang) return lang;
     }
     return null;
+  }
+
+  /**
+   * Returns all runs in the paragraph as Run class instances.
+   */
+  public getRuns(): Run[] {
+    const rawRuns = this.paragraph["w:r"];
+    if (!rawRuns) return [];
+    const arr = Array.isArray(rawRuns) ? rawRuns : [rawRuns];
+    return arr.map((r) => new Run(r));
+  }
+
+  /**
+   * Appends a Run instance to the paragraph.
+   */
+  public addRun(run: Run): void {
+    if (!this.paragraph["w:r"]) {
+      this.paragraph["w:r"] = [];
+    } else if (!Array.isArray(this.paragraph["w:r"])) {
+      this.paragraph["w:r"] = [this.paragraph["w:r"] as RunInterface];
+    }
+    (this.paragraph["w:r"] as RunInterface[]).push(run.toObject());
+  }
+
+  /**
+   * Removes the run at the given zero-based index.
+   */
+  public removeRun(index: number): void {
+    if (!this.paragraph["w:r"]) return;
+    const arr = Array.isArray(this.paragraph["w:r"])
+      ? this.paragraph["w:r"]
+      : [this.paragraph["w:r"] as RunInterface];
+    arr.splice(index, 1);
+    this.paragraph["w:r"] = arr;
   }
 
   /**

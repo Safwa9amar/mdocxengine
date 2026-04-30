@@ -8,11 +8,8 @@ export class Run {
   private run: RunInterFace;
 
   constructor(run: RunInterFace) {
+    if (!run) throw new Error("Invalid run: run object is required");
     this.run = run;
-
-    if (!this.run || !this.run["w:t"]) {
-      throw new Error("Invalid run: Missing required <w:t> element");
-    }
   }
 
   /**
@@ -167,21 +164,24 @@ export class Run {
    * Determine if the run is bold.
    */
   public isBold(): boolean {
-    return !!this.run["w:rPr"]?.["w:b"];
+    const rPr = this.run["w:rPr"];
+    return rPr != null && "w:b" in rPr;
   }
 
   /**
    * Determine if the run is italic.
    */
   public isItalic(): boolean {
-    return !!this.run["w:rPr"]?.["w:i"];
+    const rPr = this.run["w:rPr"];
+    return rPr != null && "w:i" in rPr;
   }
 
   /**
    * Check if the run has underline formatting.
    */
   public hasUnderline(): boolean {
-    return !!this.run["w:rPr"]?.["w:u"];
+    const rPr = this.run["w:rPr"];
+    return rPr != null && "w:u" in rPr;
   }
 
   /**
@@ -215,6 +215,66 @@ export class Run {
    */
   public setDrawing(drawing: Drawing): void {
     (this.run as any)["w:drawing"] = drawing["w:drawing"];
+  }
+
+  /**
+   * Set font size.
+   * @param halfPoints Size in half-points (e.g. 24 = 12pt, 28 = 14pt).
+   */
+  public setFontSize(halfPoints: number): void {
+    const props = this.ensureProperties();
+    (props as any)["w:sz"] = { $: { "w:val": String(halfPoints) } };
+    (props as any)["w:szCs"] = { $: { "w:val": String(halfPoints) } };
+  }
+
+  /**
+   * Set font family.
+   * @param ascii  Font name for ASCII/Latin characters.
+   * @param cs     Font name for complex scripts (defaults to ascii).
+   */
+  public setFontFamily(ascii: string, cs?: string): void {
+    const props = this.ensureProperties();
+    props["w:rFonts"] = {
+      $: {
+        "w:ascii": ascii,
+        "w:hAnsi": ascii,
+        "w:eastAsia": ascii,
+        "w:cs": cs ?? ascii,
+      },
+    };
+  }
+
+  /**
+   * Set text color.
+   * @param hex  6-character hex color without '#' (e.g. "FF0000" for red).
+   */
+  public setColor(hex: string): void {
+    const props = this.ensureProperties();
+    (props as any)["w:color"] = { $: { "w:val": hex.replace("#", "") } };
+  }
+
+  /**
+   * Clear all run formatting (empties w:rPr).
+   */
+  public clearFormatting(): void {
+    this.run["w:rPr"] = {};
+  }
+
+  /**
+   * Returns the underlying raw run object.
+   */
+  public toObject(): RunInterFace {
+    return this.run;
+  }
+
+  /**
+   * Creates a Run from a plain text string with no formatting.
+   */
+  public static fromText(text: string): Run {
+    return new Run({
+      "w:rPr": {},
+      "w:t": { _: text, $: { "xml:space": "preserve" } },
+    });
   }
 
   /**

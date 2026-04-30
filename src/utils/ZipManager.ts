@@ -2,8 +2,12 @@ import AdmZip from "adm-zip";
 import fs from "fs/promises";
 import path from "path";
 export class ZipManager extends AdmZip {
-  constructor() {
-    super();
+  constructor(filePathOrBuffer?: string | Buffer) {
+    super(filePathOrBuffer as any);
+  }
+
+  static async loadFromFile(filePath: string): Promise<ZipManager> {
+    return new ZipManager(filePath);
   }
 
   getFileAsBuffer(entryName: string): Buffer | null {
@@ -50,6 +54,6 @@ export class ZipManager extends AdmZip {
   }
 
   toBuffer(): Buffer {
-    return this.toBuffer();
+    return super.toBuffer();
   }
 }
