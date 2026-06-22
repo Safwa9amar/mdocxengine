@@ -10,6 +10,13 @@ export class ZipManager extends AdmZip {
     return new ZipManager(filePath);
   }
 
+  // Load a .docx straight from an in-memory Buffer (no temp file). adm-zip's
+  // constructor already accepts a Buffer, so this mirrors loadFromFile for
+  // stateless callers that hold the document bytes (e.g. fetched from storage).
+  static async loadFromBuffer(buffer: Buffer): Promise<ZipManager> {
+    return new ZipManager(buffer);
+  }
+
   getFileAsBuffer(entryName: string): Buffer | null {
     const entry = this.getEntry(entryName);
     if (!entry) return null;

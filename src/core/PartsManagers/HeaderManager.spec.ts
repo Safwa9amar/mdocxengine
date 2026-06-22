@@ -28,29 +28,32 @@ describe("HeaderManager", () => {
     let regex = /<w:t>(.*?)<\/w:t>/g;
     let text = doc.match(regex)?.map((text) => text.replace("<w:t>", "").replace("</w:t>", ""));
 
-    res = await AI.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: `
-         get all headres and main title from this txt ${text?.toString()} 
-         than enhance headers and add chapters (Chapter I , Chapter II)  and  nested numbring based on chapter and header , subheader  
-         get only important and main titles, remove unnecessary title
-         and create a table content based on all items
-      `,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.STRING,
+    try {
+      res = await AI.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: `
+           get all headres and main title from this txt ${text?.toString()}
+           than enhance headers and add chapters (Chapter I , Chapter II)  and  nested numbring based on chapter and header , subheader
+           get only important and main titles, remove unnecessary title
+           and create a table content based on all items
+        `,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.STRING,
+            },
           },
         },
-      },
-    });
-    console.table(res.text);
-
-    fs.writeFile("data.txt", res.text || "", (res) => {
-      console.log(res);
-    });
+      });
+      console.table(res.text);
+      fs.writeFile("data.txt", res.text || "", (err) => {
+        if (err) console.log(err);
+      });
+    } catch (e: any) {
+      console.log("Gemini API unavailable:", e?.message ?? e);
+    }
     // console.log(text?.toString().length);
   }, 100000);
 

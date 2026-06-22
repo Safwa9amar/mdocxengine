@@ -16,6 +16,10 @@ import { CrossReferenceManager } from "./core/PartsManagers/CrossReferenceManage
 import { CitationManager } from "./core/PartsManagers/CitationManager";
 import { PageLayoutManager } from "./core/PartsManagers/PageLayoutManager";
 import { CaptionManager } from "./core/PartsManagers/CaptionManager";
+import { CommentsManager } from "./core/PartsManagers/CommentsManager";
+import { TrackedChangesManager } from "./core/PartsManagers/TrackedChangesManager";
+import { SectionManager } from "./core/PartsManagers/SectionManager";
+import { ShapeManager } from "./core/PartsManagers/ShapeManager";
 import fs from "fs/promises";
 import path from "path";
 import dotenv from "dotenv";
@@ -40,6 +44,10 @@ class Mdocxengine {
   citations: CitationManager;
   pageLayout: PageLayoutManager;
   captions: CaptionManager;
+  comments: CommentsManager;
+  trackedChanges: TrackedChangesManager;
+  sections: SectionManager;
+  shapes: ShapeManager;
 
   private constructor(zip: ZipManager) {
     this.zip = zip;
@@ -59,11 +67,22 @@ class Mdocxengine {
     this.crossRef = new CrossReferenceManager(zip);
     this.citations = new CitationManager(zip);
     this.pageLayout = new PageLayoutManager(zip);
-    this.captions = new CaptionManager(zip);
+    this.captions       = new CaptionManager(zip);
+    this.comments       = new CommentsManager(zip);
+    this.trackedChanges = new TrackedChangesManager(zip);
+    this.sections       = new SectionManager(zip);
+    this.shapes         = new ShapeManager(zip);
   }
 
   static async loadFromFile(path: string) {
     const zm = await ZipManager.loadFromFile(path);
+    return new Mdocxengine(zm);
+  }
+
+  // Load a document from an in-memory Buffer (e.g. bytes fetched from object
+  // storage) without writing a temp file. Mirrors loadFromFile.
+  static async loadFromBuffer(buffer: Buffer) {
+    const zm = await ZipManager.loadFromBuffer(buffer);
     return new Mdocxengine(zm);
   }
 
@@ -94,8 +113,11 @@ export {
   CitationManager,
   PageLayoutManager,
   CaptionManager,
+  CommentsManager,
+  TrackedChangesManager,
+  SectionManager,
+  ShapeManager,
 };
-
 export { default as Paragraph } from "./core/files/paragraph/index";
 export { Run } from "./core/files/paragraph/Run";
 export { Table } from "./core/files/table/index";
@@ -128,3 +150,22 @@ export type {
   ChapterSeparator,
   CaptionEntry,
 } from "./core/PartsManagers/CaptionManager";
+export type { CommentEntry } from "./core/PartsManagers/CommentsManager";
+export type { RevisionEntry, RevisionType } from "./core/PartsManagers/TrackedChangesManager";
+export type {
+  SectionEntry,
+  SectionLayout,
+  SectionPageSize,
+  SectionMargins,
+  SectionHeaderFooterRef,
+} from "./core/PartsManagers/SectionManager";
+export type {
+  ShapeEntry,
+  TextBoxOptions,
+  InsertShapeOptions,
+  InsertLineOptions,
+  ShapeType,
+  ShapePosition,
+  ShapeSize,
+} from "./core/PartsManagers/ShapeManager";
+export { EMU_PER_INCH, EMU_PER_CM } from "./core/PartsManagers/ShapeManager";

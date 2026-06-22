@@ -69,10 +69,9 @@ export declare class CaptionManager {
      *   [text run]             " My caption text"
      */
     private buildCaptionRuns;
-    /**
-     * Build the full caption <w:p> node (uses the "Caption" paragraph style).
-     */
     private buildCaptionParagraph;
+    /** Count how many captions for a given label already exist in the document. */
+    private countExistingCaptions;
     /**
      * Insert a caption paragraph next to the paragraph at `nearIndex`.
      *
@@ -186,6 +185,10 @@ declare interface CellTextOptions {
 /** Chapter-number separator matching Word's "Use separator" dropdown */
 export declare type ChapterSeparator = "-" | "." | ":" | "–" | "—";
 
+declare type ChapterSeparator_2 = "hyphen" | "period" | "colon" | "emDash" | "enDash";
+
+declare type ChapterSeparator_3 = "hyphen" | "period" | "colon" | "emDash" | "enDash";
+
 export declare class CitationManager {
     private zip;
     constructor(zip: default_2);
@@ -233,6 +236,36 @@ export declare interface ColumnOptions {
     count: number;
     space?: number;
     equalWidth?: boolean;
+}
+
+export declare interface CommentEntry {
+    id: number;
+    author: string;
+    initials: string;
+    date: string;
+    text: string;
+}
+
+export declare class CommentsManager {
+    private zip;
+    private rels;
+    private contentTypes;
+    constructor(zip: default_2);
+    private readComments;
+    private writeComments;
+    private emptyCommentsDoc;
+    private normalizeComments;
+    private normalizeArr;
+    private nextId;
+    private extractText;
+    private ensureRegistered;
+    private readDocument;
+    private writeDocument;
+    private getBodyParagraphs;
+    getComments(): Promise<CommentEntry[]>;
+    addComment(paragraphIndex: number, author: string, text: string, date?: string): Promise<number>;
+    deleteComment(id: number): Promise<void>;
+    resolveComment(id: number): Promise<void>;
 }
 
 export declare class ContentTypesManager {
@@ -307,11 +340,6 @@ export declare class CrossReferenceManager {
      */
     removeBookmark(name: string): Promise<void>;
     /**
-     * Create a run that cross-references a bookmark by name.
-     * Insert this run into any paragraph via paragraph.addRun().
-     */
-    createCrossRefRun(bookmarkName: string, displayText?: string): Run_2;
-    /**
      * Returns three run objects that together form a cross-reference field.
      * All three must be added to the same paragraph in order.
      */
@@ -325,7 +353,10 @@ export declare class DocumentManager {
     addFooterReferenceToDocument(relId: string, type?: "default" | "first" | "even"): Promise<void>;
     private _addSectPrReference;
     /**
-     * Returns all paragraphs in word/document.xml as Paragraph instances.
+     * Returns the top-level body paragraphs from word/document.xml.
+     * Only direct children of <w:body> are returned — paragraphs nested
+     * inside table cells are not included, preventing duplication on
+     * round-trips through saveChanges().
      */
     getParagraphs(): Promise<Paragraph[]>;
     /**
@@ -383,6 +414,10 @@ declare interface Drawing {
         $: Record<string, unknown>;
     };
 }
+
+export declare const EMU_PER_CM = 360000;
+
+export declare const EMU_PER_INCH = 914400;
 
 export declare interface EndnoteEntry {
     id: number;
@@ -457,13 +492,18 @@ export declare class FooterManager {
     getAllFooterFiles(zip: default_2): xmlFile[];
     private nextFooterPath;
     private buildFooterXml;
+    private readDocObj;
+    private writeDocObj;
+    private getSectPr;
+    private buildPageNumberRuns;
     /**
      * Adds a footer to the document.
-     * @param text  Plain text for the footer paragraph.
-     * @param type  Footer type: "default" | "first" | "even". Defaults to "default".
-     * @param xml   Optional — provide raw footer XML instead of auto-generating from text.
+     * @param registerInSectPr  When false, skips adding the <w:footerReference> to the main
+     *                          w:sectPr. Useful when building multi-section documents.
      */
-    addFooter(text: string, type?: FooterType, xml?: string): Promise<{
+    addFooter(text: string, type?: FooterType, xml?: string, options?: {
+        registerInSectPr?: boolean;
+    }): Promise<{
         footerPath: string;
         relId: string;
         footerXml: string;
@@ -473,10 +513,44 @@ export declare class FooterManager {
      */
     updateFooter(name: string, newXml: string): void;
     /**
-     * Removes a footer: deletes the zip entry, content-type override, relationship,
-     * and the <w:footerReference> from document.xml's <w:sectPr>.
+     * Removes a footer: deletes zip entry, content-type, relationship and sectPr reference.
      */
     removeFooter(name: string): Promise<void>;
+    /**
+     * Insert a page number paragraph into the specified footer file.
+     * Appends a new paragraph containing a PAGE field (optionally "X / Y").
+     */
+    insertPageNumber(footerPath: string, options?: PageNumberOptions): Promise<void>;
+    /**
+     * Remove all PAGE / NUMPAGES fields from the specified footer.
+     */
+    removePageNumbers(footerPath: string): Promise<void>;
+    /**
+     * Set page number format via w:pgNumType in w:sectPr.
+     * Covers the full "Format Page Numbers" dialog:
+     *   - number format (decimal, roman, letter…)
+     *   - include chapter number + chapter heading style + separator
+     *   - continue from previous section OR start at a specific number
+     */
+    formatPageNumbers(options: PageNumberFormatOptions): Promise<void>;
+    /**
+     * Enable or disable a different header/footer for the first page (w:titlePg in sectPr).
+     */
+    setDifferentFirstPage(enable: boolean): Promise<void>;
+    /**
+     * Enable or disable different odd/even page footers (w:evenAndOddHeaders in settings.xml).
+     */
+    setDifferentOddEvenPages(enable: boolean): Promise<void>;
+    /**
+     * Set the distance from the bottom of the page to the footer (in twips; 1 inch = 1440).
+     * Default in Word is ~709 twips (0.49").
+     */
+    setFooterDistance(twips: number): Promise<void>;
+    /**
+     * Link (or unlink) the given footer to the previous section's footer.
+     * Passing `true` removes the footer part so Word inherits from the previous section.
+     */
+    linkToPrevious(footerPath: string, linked: boolean): Promise<void>;
     private removeFooterRelAndReference;
     private removeFooterReferenceFromDocument;
 }
@@ -536,41 +610,69 @@ export declare class HeaderManager {
     constructor(zip: default_2);
     getHeaderByName(name: string): xmlFile_2 | false;
     getAllheadersFiles(zip: default_2): xmlFile_2[];
-    /**
-     * Returns the next available header filename (e.g. word/header3.xml).
-     */
     private nextHeaderPath;
-    /**
-     * Builds a minimal <w:hdr> XML string containing a single paragraph with the given text.
-     */
     private buildHeaderXml;
+    private readDocObj;
+    private writeDocObj;
+    private getSectPr;
+    private buildPageNumberRuns;
     /**
      * Adds a header to the document.
-     * @param text     Plain text for the header paragraph.
-     * @param type     Header type: "default" | "first" | "even". Defaults to "default".
-     * @param xml      Optional — provide raw header XML to use instead of auto-generating from text.
+     * @param registerInSectPr  When false, skips adding the <w:headerReference> to the main
+     *                          w:sectPr. Useful when building multi-section documents where the
+     *                          reference will be placed in an intermediate section-break paragraph.
      */
-    addHeader(text: string, type?: HeaderType, xml?: string): Promise<{
+    addHeader(text: string, type?: HeaderType, xml?: string, options?: {
+        registerInSectPr?: boolean;
+    }): Promise<{
         headerPath: string;
         relId: string;
         headerXml: string;
     }>;
     /**
      * Overwrites an existing header file's content.
-     * @param name   Full path like "word/header1.xml"
-     * @param newXml New XML string for the header.
      */
     updateHeader(name: string, newXml: string): void;
     /**
-     * Removes a header: deletes the zip entry, content-type override, relationship,
-     * and the <w:headerReference> from document.xml's <w:sectPr>.
-     * @param name  Full path like "word/header1.xml"
+     * Removes a header: deletes zip entry, content-type, relationship and sectPr reference.
      */
     removeHeader(name: string): Promise<void>;
     /**
-     * Finds the relationship ID for a given header file, removes it from .rels,
-     * and removes the matching <w:headerReference> from document.xml.
+     * Insert a page number paragraph into the specified header file.
+     * Appends a new paragraph containing a PAGE field (optionally "X / Y").
      */
+    insertPageNumber(headerPath: string, options?: PageNumberOptions_2): Promise<void>;
+    /**
+     * Remove all PAGE / NUMPAGES fields from the specified header.
+     */
+    removePageNumbers(headerPath: string): Promise<void>;
+    /**
+     * Set page number format via w:pgNumType in w:sectPr.
+     * Covers the full "Format Page Numbers" dialog:
+     *   - number format (decimal, roman, letter…)
+     *   - include chapter number + chapter heading style + separator
+     *   - continue from previous section OR start at a specific number
+     */
+    formatPageNumbers(options: PageNumberFormatOptions_2): Promise<void>;
+    /**
+     * Enable or disable a different header/footer for the first page (w:titlePg in sectPr).
+     */
+    setDifferentFirstPage(enable: boolean): Promise<void>;
+    /**
+     * Enable or disable different odd/even page headers (w:evenAndOddHeaders in settings.xml).
+     */
+    setDifferentOddEvenPages(enable: boolean): Promise<void>;
+    /**
+     * Set the distance from the top of the page to the header (in twips; 1 inch = 1440).
+     * Default in Word is ~709 twips (0.49").
+     */
+    setHeaderDistance(twips: number): Promise<void>;
+    /**
+     * Link (or unlink) the given header to the previous section's header.
+     * In OOXML this is controlled by the absence/presence of a headerReference for this section.
+     * Passing `false` removes the reference so Word inherits from the previous section.
+     */
+    linkToPrevious(headerPath: string, linked: boolean): Promise<void>;
     private removeHeaderRelAndReference;
     private removeHeaderReferenceFromDocument;
 }
@@ -606,6 +708,32 @@ export declare interface ImageEntry {
 /** Convert inches to twips */
 export declare const inchesToTwips: (inches: number) => number;
 
+export declare interface InsertLineOptions {
+    color?: string;
+    arrowEnd?: boolean;
+    arrowStart?: boolean;
+    lineWidthPt?: number;
+    paragraphIndex?: number;
+    label?: string;
+    labelOffsetX?: number;
+    labelOffsetY?: number;
+}
+
+export declare interface InsertShapeOptions {
+    position?: ShapePosition;
+    size?: ShapeSize;
+    paragraphIndex?: number;
+    fillColor?: string;
+    borderColor?: string;
+    floating?: boolean;
+    name?: string;
+    text?: string;
+    textColor?: string;
+    fontSize?: number;
+    bold?: boolean;
+    textAlign?: "l" | "ctr" | "r";
+}
+
 export declare interface LineNumberingOptions {
     countBy?: number;
     start?: number;
@@ -636,8 +764,13 @@ export declare class Mdocxengine {
     citations: CitationManager;
     pageLayout: PageLayoutManager;
     captions: CaptionManager;
+    comments: CommentsManager;
+    trackedChanges: TrackedChangesManager;
+    sections: SectionManager;
+    shapes: ShapeManager;
     private constructor();
     static loadFromFile(path: string): Promise<Mdocxengine>;
+    static loadFromBuffer(buffer: Buffer): Promise<Mdocxengine>;
     saveToFile(outputPath: string): Promise<void>;
 }
 
@@ -826,6 +959,88 @@ export declare interface PageMargins {
     footer?: number;
 }
 
+declare type PageNumberFormat = "decimal" | "upperRoman" | "lowerRoman" | "upperLetter" | "lowerLetter";
+
+declare type PageNumberFormat_2 = "decimal" | "upperRoman" | "lowerRoman" | "upperLetter" | "lowerLetter";
+
+declare interface PageNumberFormatOptions {
+    /** Numbering style written to w:pgNumType. Default: "decimal". */
+    format?: PageNumberFormat;
+    /**
+     * Include the chapter number before the page number (e.g. "1-1", "1-A").
+     * Requires a heading style to be set via chapterStyle.
+     */
+    includeChapterNumber?: boolean;
+    /**
+     * Heading level whose numbering is used as the chapter prefix.
+     * 1 = Heading 1, 2 = Heading 2, … Default: 1.
+     */
+    chapterStyle?: number;
+    /**
+     * Separator between chapter and page number.
+     * hyphen → "-", period → ".", colon → ":", emDash → "—", enDash → "–".
+     * Default: "hyphen".
+     */
+    chapterSeparator?: ChapterSeparator_2;
+    /**
+     * When true, page numbering continues from the previous section (no w:start attribute).
+     * When false/omitted, startAt is used if provided.
+     */
+    continueFromPreviousSection?: boolean;
+    /** Restart page numbering at this value. Ignored when continueFromPreviousSection is true. */
+    startAt?: number;
+}
+
+declare interface PageNumberFormatOptions_2 {
+    /** Numbering style written to w:pgNumType. Default: "decimal". */
+    format?: PageNumberFormat_2;
+    /**
+     * Include the chapter number before the page number (e.g. "1-1", "1-A").
+     * Requires a heading style to be set via chapterStyle.
+     */
+    includeChapterNumber?: boolean;
+    /**
+     * Heading level whose numbering is used as the chapter prefix.
+     * 1 = Heading 1, 2 = Heading 2, … Default: 1.
+     */
+    chapterStyle?: number;
+    /**
+     * Separator between chapter and page number.
+     * hyphen → "-", period → ".", colon → ":", emDash → "—", enDash → "–".
+     * Default: "hyphen".
+     */
+    chapterSeparator?: ChapterSeparator_3;
+    /**
+     * When true, page numbering continues from the previous section (no w:start attribute).
+     * When false/omitted, startAt is used if provided.
+     */
+    continueFromPreviousSection?: boolean;
+    /** Restart page numbering at this value. Ignored when continueFromPreviousSection is true. */
+    startAt?: number;
+}
+
+declare interface PageNumberOptions {
+    /** Paragraph alignment for the page-number line. Default: "center". */
+    alignment?: "left" | "center" | "right";
+    /** Numbering style. Default: "decimal". */
+    format?: PageNumberFormat;
+    /** When true, renders "X / Y" (current page / total pages). */
+    includeTotalPages?: boolean;
+    /** Prefix text before the page number, e.g. "Page ". */
+    prefix?: string;
+}
+
+declare interface PageNumberOptions_2 {
+    /** Paragraph alignment for the page-number line. Default: "center". */
+    alignment?: "left" | "center" | "right";
+    /** Numbering style. Default: "decimal". */
+    format?: PageNumberFormat_2;
+    /** When true, renders "X / Y" (current page / total pages). */
+    includeTotalPages?: boolean;
+    /** Prefix text before the page number, e.g. "Page ". */
+    prefix?: string;
+}
+
 export declare interface PageSize {
     width: number;
     height: number;
@@ -889,6 +1104,14 @@ export declare class Paragraph {
      * @param alignment - One of "left" | "center" | "right" | "both"
      */
     setAlignment(alignment: "left" | "center" | "right" | "both"): void;
+    /**
+     * Ensures <w:pPr> exists AND is the first child of <w:p>. OOXML (CT_P) requires
+     * paragraph properties to precede all run content; xml2js's Builder serializes
+     * keys in insertion order, so simply assigning this.paragraph["w:pPr"] = {} on a
+     * paragraph that already has runs would emit <w:pPr> after <w:r> and produce a
+     * file Word flags as corrupt. Rebuild the object with w:pPr first when creating it.
+     */
+    private ensurePPr;
     /**
      * Gets the current alignment of the paragraph.
      */
@@ -1079,6 +1302,17 @@ declare enum RelsType {
     Root = "_rels/.rels",
     Document = "word/_rels/document.xml.rels"
 }
+
+export declare interface RevisionEntry {
+    id: number;
+    type: RevisionType;
+    author: string;
+    date: string;
+    text: string;
+    paragraphIndex: number;
+}
+
+export declare type RevisionType = "ins" | "del" | "rPrChange" | "pPrChange";
 
 export declare class RootRelManager extends RelManager {
     constructor(zip: ZipManager, relsPath?: RelsType);
@@ -1292,6 +1526,107 @@ declare interface RunProperties {
 }
 
 export declare type SectionBreakType = "nextPage" | "continuous" | "evenPage" | "oddPage" | "nextColumn";
+
+export declare interface SectionEntry {
+    index: number;
+    isFinal: boolean;
+    type?: string;
+    pageSize?: SectionPageSize;
+    margins?: SectionMargins;
+    headerRefs: SectionHeaderFooterRef[];
+    footerRefs: SectionHeaderFooterRef[];
+    paragraphIndex?: number;
+}
+
+export declare interface SectionHeaderFooterRef {
+    relId: string;
+    type: "default" | "first" | "even";
+}
+
+export declare interface SectionLayout {
+    type?: "nextPage" | "continuous" | "evenPage" | "oddPage";
+    pageSize?: SectionPageSize;
+    margins?: SectionMargins;
+}
+
+export declare class SectionManager {
+    private zip;
+    constructor(zip: default_2);
+    private readDocument;
+    private writeDocument;
+    private getBodyParagraphs;
+    private norm;
+    private parseSectPr;
+    private applyLayout;
+    private findSectPr;
+    getSections(): Promise<SectionEntry[]>;
+    addSectionBreak(paragraphIndex: number, type: "nextPage" | "continuous" | "evenPage" | "oddPage"): Promise<void>;
+    removeSectionBreak(paragraphIndex: number): Promise<void>;
+    setSectionLayout(sectionIndex: number, layout: SectionLayout): Promise<void>;
+    setSectionHeader(sectionIndex: number, relId: string, type?: "default" | "first" | "even"): Promise<void>;
+    setSectionFooter(sectionIndex: number, relId: string, type?: "default" | "first" | "even"): Promise<void>;
+}
+
+export declare interface SectionMargins {
+    top: number;
+    bottom: number;
+    left: number;
+    right: number;
+    header?: number;
+    footer?: number;
+    gutter?: number;
+}
+
+export declare interface SectionPageSize {
+    width: number;
+    height: number;
+    orientation?: "portrait" | "landscape";
+}
+
+export declare interface ShapeEntry {
+    id: number;
+    name: string;
+    type: "textbox" | ShapeType | "unknown";
+    position?: ShapePosition;
+    size: ShapeSize;
+}
+
+export declare class ShapeManager {
+    private zip;
+    constructor(zip: default_2);
+    private readDocument;
+    private writeDocument;
+    private getBodyParagraphs;
+    private norm;
+    private nextShapeId;
+    private buildSpPr;
+    private buildWsp;
+    private buildGraphicData;
+    private buildAnchor;
+    private buildInline;
+    private insertDrawingParagraph;
+    /** Collect all w:drawing nodes from a run, handling both direct and
+     *  mc:AlternateContent-wrapped drawings. */
+    private drawingsFromRun;
+    private extractShapesFromParagraph;
+    getShapes(): Promise<ShapeEntry[]>;
+    insertTextBox(opts: TextBoxOptions): Promise<number>;
+    insertShape(type: ShapeType, opts?: InsertShapeOptions): Promise<number>;
+    insertLine(x1: number, y1: number, x2: number, y2: number, opts?: InsertLineOptions): Promise<number>;
+    deleteShape(id: number): Promise<void>;
+}
+
+export declare interface ShapePosition {
+    x: number;
+    y: number;
+}
+
+export declare interface ShapeSize {
+    width: number;
+    height: number;
+}
+
+export declare type ShapeType = "rect" | "roundRect" | "ellipse" | "triangle" | "diamond" | "line" | "rightArrow" | "leftArrow" | "star5" | "cloud" | "heart";
 
 export declare interface StyleEntry {
     id: string;
@@ -1642,6 +1977,16 @@ declare interface TableRowProperties {
     [key: string]: any;
 }
 
+export declare interface TextBoxOptions {
+    text: string;
+    position?: ShapePosition;
+    size?: ShapeSize;
+    paragraphIndex?: number;
+    fillColor?: string;
+    borderColor?: string;
+    floating?: boolean;
+}
+
 /**
  * Represents a text run in the document.
  * A run is a region of text with a common set of properties, such as formatting,
@@ -1675,6 +2020,30 @@ export declare interface TocOptions {
     useHyperlinks?: boolean;
 }
 
+export declare class TrackedChangesManager {
+    private zip;
+    constructor(zip: default_2);
+    private readDocument;
+    private writeDocument;
+    private getBodyParagraphs;
+    private norm;
+    private textFromRuns;
+    private extractRevisionsFromParagraph;
+    private acceptInsInParagraph;
+    private rejectInsInParagraph;
+    private acceptDelInParagraph;
+    private rejectDelInParagraph;
+    private acceptRPrChanges;
+    private rejectRPrChanges;
+    private acceptPPrChange;
+    private rejectPPrChange;
+    getRevisions(): Promise<RevisionEntry[]>;
+    acceptAll(): Promise<void>;
+    rejectAll(): Promise<void>;
+    acceptRevision(id: number): Promise<void>;
+    rejectRevision(id: number): Promise<void>;
+}
+
 /** Convert twips to centimetres */
 export declare const twipsToCm: (twips: number) => number;
 
@@ -1694,6 +2063,7 @@ declare type xmlFile_2 = {
 export declare class ZipManager extends default_2 {
     constructor(filePathOrBuffer?: string | Buffer);
     static loadFromFile(filePath: string): Promise<ZipManager>;
+    static loadFromBuffer(buffer: Buffer): Promise<ZipManager>;
     getFileAsBuffer(entryName: string): Buffer | null;
     getFileAsString(entryName: string): string | null;
     fileExists(entryName: string): boolean;

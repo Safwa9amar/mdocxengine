@@ -62,65 +62,41 @@ class Paragraph {
    * @returns Object with a boolean (hasText) and the combined text string.
    */
   public async getPlainTextSafe(): Promise<{ hasText: boolean; text: string }> {
-    const parsed = this.paragraph;
+    const asArray = (v: any): any[] => (Array.isArray(v) ? v : v ? [v] : []);
 
-    // Helper function to recursively extract text
-    const extractText = (node: any): string => {
-      if (!node || typeof node !== "object") return "";
-
-      let result = "";
-
-      // 1. Handle runs <w:r>
-      if (Array.isArray(node["w:r"])) {
-        for (const run of node["w:r"]) {
-          result += extractText(run);
-        }
-      }
-
-      // 2. Handle text <w:t>
-      if (node["w:t"]) {
-        const t = node["w:t"];
-        if (typeof t === "string") {
-          result += t;
-        } else if (typeof t._ === "string") {
-          result += t._;
-        }
-      }
-
-      // 3. Handle tabs <w:tab> and line breaks <w:br>
-      if (node["w:tab"]) {
-        result += "\t"; // add tab
-      }
-      if (node["w:br"]) {
-        result += "\n"; // add line break
-      }
-
-      // 4. Handle hyperlinks <w:hyperlink>
-      if (Array.isArray(node["w:hyperlink"])) {
-        for (const link of node["w:hyperlink"]) {
-          result += extractText(link); // recurse into hyperlink children
-        }
-      }
-
-      // 5. Handle any other nested children
-      for (const key in node) {
-        if (node.hasOwnProperty(key)) {
-          const child = node[key];
-
-          if (Array.isArray(child)) {
-            for (const c of child) {
-              result += extractText(c);
-            }
-          } else {
-            result += extractText(child);
-          }
-        }
-      }
-
-      return result;
+    // Text inside a single <w:t> (string, { _: text }, or an array of either).
+    const tText = (t: any): string => {
+      if (t === undefined || t === null) return "";
+      if (typeof t === "string") return t;
+      if (Array.isArray(t)) return t.map(tText).join("");
+      if (typeof t._ === "string") return t._;
+      return "";
     };
 
-    const text = extractText(parsed || {}).trimEnd();
+    // Visible text contributed by one run: its <w:t>, plus tab/break markers.
+    // Field codes (<w:instrText>) and deleted text are intentionally ignored.
+    const runText = (run: any): string => {
+      if (!run || typeof run !== "object") return "";
+      let s = tText(run["w:t"]);
+      if (run["w:tab"]) s += "\t";
+      if (run["w:br"]) s += "\n";
+      return s;
+    };
+
+    // Collect runs from a container, descending into the inline wrappers Word
+    // uses (hyperlinks and tracked-change <w:ins>/<w:del>). Each run is visited
+    // EXACTLY once — the previous implementation re-walked every key after the
+    // targeted passes, which doubled text for any multi-run paragraph.
+    const collect = (node: any): string => {
+      if (!node || typeof node !== "object") return "";
+      let s = "";
+      for (const run of asArray(node["w:r"])) s += runText(run);
+      for (const link of asArray(node["w:hyperlink"])) s += collect(link);
+      for (const ins of asArray(node["w:ins"])) s += collect(ins);
+      return s;
+    };
+
+    const text = collect(this.paragraph).trimEnd();
     return { hasText: text.length > 0, text };
   }
 
@@ -208,10 +184,28 @@ class Paragraph {
    * @param alignment - One of "left" | "center" | "right" | "both"
    */
   public setAlignment(alignment: "left" | "center" | "right" | "both"): void {
-    if (!this.paragraph["w:pPr"]) {
-      this.paragraph["w:pPr"] = {};
+    this.ensurePPr();
+    this.paragraph["w:pPr"]!["w:jc"] = { $: { "w:val": alignment } };
+  }
+
+  /**
+   * Ensures <w:pPr> exists AND is the first child of <w:p>. OOXML (CT_P) requires
+   * paragraph properties to precede all run content; xml2js's Builder serializes
+   * keys in insertion order, so simply assigning this.paragraph["w:pPr"] = {} on a
+   * paragraph that already has runs would emit <w:pPr> after <w:r> and produce a
+   * file Word flags as corrupt. Rebuild the object with w:pPr first when creating it.
+   */
+  private ensurePPr(): void {
+    if (this.paragraph["w:pPr"]) return;
+    const raw = this.paragraph as unknown as Record<string, unknown>;
+    const rebuilt: Record<string, unknown> = {};
+    if (raw.$ !== undefined) rebuilt.$ = raw.$;
+    rebuilt["w:pPr"] = {};
+    for (const key of Object.keys(raw)) {
+      if (key === "$" || key === "w:pPr") continue;
+      rebuilt[key] = raw[key];
     }
-    this.paragraph["w:pPr"]["w:jc"] = { $: { "w:val": alignment } };
+    this.paragraph = rebuilt as unknown as ParagraphInterface;
   }
 
   /**
@@ -234,10 +228,8 @@ class Paragraph {
    * @param styleId - The Word style ID (e.g., "Heading1", "Normal").
    */
   public applyStyle(styleId: string): void {
-    if (!this.paragraph["w:pPr"]) {
-      this.paragraph["w:pPr"] = {};
-    }
-    this.paragraph["w:pPr"]["w:pStyle"] = { $: { "w:val": styleId } };
+    this.ensurePPr();
+    this.paragraph["w:pPr"]!["w:pStyle"] = { $: { "w:val": styleId } };
   }
   /**
    * Removes all formatting (bold, italic, etc.) from runs but keeps text.
@@ -387,7 +379,16 @@ class Paragraph {
    */
   public static async createFromXml(xmlString: string): Promise<Paragraph> {
     const parsedParagraph = await parseXml(xmlString);
-    return new Paragraph(parsedParagraph);
+    // parseXml returns the element wrapped under its root key ("w:p"), but the
+    // Paragraph constructor (and the rest of the engine) expects the INNER object
+    // — the paragraph's attributes/children directly, e.g. { $, "w:pPr", "w:r" }.
+    // Without unwrapping, content (runs, <w:br>, …) ends up nested one level too
+    // deep and is silently dropped on serialization.
+    const inner =
+      parsedParagraph && typeof parsedParagraph === "object" && "w:p" in parsedParagraph
+        ? (parsedParagraph as Record<string, unknown>)["w:p"]
+        : parsedParagraph;
+    return new Paragraph(inner as ParagraphInterface);
   }
   /**
    * Returns all highlighted runs in the current paragraph, optionally filtered by fill and value.
@@ -522,7 +523,11 @@ class Paragraph {
    * Detects the primary language of the paragraph (if available).
    */
   public detectLanguage(): string | null {
-    const runs = this.paragraph["w:r"] || [];
+    // w:r is a single object (not an array) when the paragraph has exactly one
+    // run — xml2js explicitArray:false. Normalize before iterating, otherwise
+    // `for...of` on the object throws "runs is not iterable".
+    const raw = this.paragraph["w:r"];
+    const runs = Array.isArray(raw) ? raw : raw ? [raw] : [];
     for (const run of runs) {
       const lang = run?.["w:rPr"]?.["w:lang"]?.$?.["w:val"];
       if (lang) return lang;

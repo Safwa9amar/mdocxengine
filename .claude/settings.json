@@ -2,7 +2,12 @@
   "permissions": {
     "allow": [
       "Bash(npm run *)",
-      "Bash(node --input-type=module)"
+      "Bash(node --input-type=module)",
+      "Bash(node -e ' *)",
+      "Bash(npx tsc *)",
+      "Bash(npx vitest *)",
+      "Bash(grep -E \"\\\\.ts$\")",
+      "Bash(awk '{print $NF}')"
     ]
   }
 }

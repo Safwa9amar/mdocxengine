@@ -1,5 +1,4 @@
 import * as XmlUtils from "@/utils/xmlUtils";
-import { getParagraphsFromXmlFile } from "@/helpers/getParagraphsFromXml";
 import Paragraph from "@/core/files/paragraph/index";
 import { Table } from "@/core/files/table/index";
 import AdmZip from "adm-zip";
@@ -58,22 +57,23 @@ export default class DocumentManager {
   // ─── Paragraph read API ───────────────────────────────────────────────────
 
   /**
-   * Returns all paragraphs in word/document.xml as Paragraph instances.
+   * Returns the top-level body paragraphs from word/document.xml.
+   * Only direct children of <w:body> are returned — paragraphs nested
+   * inside table cells are not included, preventing duplication on
+   * round-trips through saveChanges().
    */
   public async getParagraphs(): Promise<Paragraph[]> {
     const xml = this.zip.readAsText(DOC_PATH);
     if (!xml) return [];
 
-    const rawParagraphs = await getParagraphsFromXmlFile(xml);
-    const paragraphs: Paragraph[] = [];
+    const docObj = await XmlUtils.parseXml(xml);
+    const body   = this._getBody(docObj);
+    if (!body) return [];
 
-    for (const { xmlStr } of rawParagraphs) {
-      const parsed = await XmlUtils.parseXml(xmlStr);
-      const pData = parsed["w:p"] ?? parsed;
-      paragraphs.push(new Paragraph(pData));
-    }
-
-    return paragraphs;
+    const raw = body["w:p"];
+    if (!raw) return [];
+    const arr = Array.isArray(raw) ? raw : [raw];
+    return arr.map((p: any) => new Paragraph(p));
   }
 
   /**

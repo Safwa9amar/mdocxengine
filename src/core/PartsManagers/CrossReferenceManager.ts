@@ -160,23 +160,6 @@ export class CrossReferenceManager {
   }
 
   /**
-   * Create a run that cross-references a bookmark by name.
-   * Insert this run into any paragraph via paragraph.addRun().
-   */
-  public createCrossRefRun(bookmarkName: string, displayText = ""): RunInterface {
-    const instrText = ` REF ${bookmarkName} \\h `;
-    return {
-      "w:rPr": {},
-      "w:fldChar": { $: { "w:fldCharType": "begin" } },
-    } as any as RunInterface;
-
-    // Note: a full cross-ref needs three sibling runs (begin, instrText+separate, end).
-    // Use createCrossRefRuns() for the complete triplet.
-    void instrText;
-    void displayText;
-  }
-
-  /**
    * Returns three run objects that together form a cross-reference field.
    * All three must be added to the same paragraph in order.
    */
