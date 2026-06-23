@@ -16,9 +16,14 @@
  * resolves to that vendored v4 copy. It is also declared in `package.json`
  * dependencies so consumers resolve the same version normally.
  */
+// The vendored fast-xml-parser is CommonJS (module.exports = { XMLParser, ... }).
+// Import it as a default/namespace binding and destructure at runtime so it
+// resolves cleanly under both Rollup (vite SSR build) and vitest.
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore - resolved to the vendored fast-xml-parser v4 copy
-import { XMLParser, XMLBuilder } from "../../../../vendor/fast-xml-parser/src/fxp";
+import * as fxp from "../../../../vendor/fast-xml-parser/src/fxp.js";
+
+const { XMLParser, XMLBuilder } = (fxp as any).default ?? (fxp as any);
 
 /** Options shared by parse + build so the body round-trips faithfully. */
 const PARSE_OPTIONS = {

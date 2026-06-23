@@ -7,6 +7,19 @@ export declare interface AppProperties {
     characters?: number;
 }
 
+export declare type BlockKind = "paragraph" | "table" | "sectPr" | "other";
+
+/**
+ * A single ordered body child.
+ * `node` is the raw fast-xml-parser ordered node: an object whose only
+ * non-`:@` key is the element tag (e.g. `{ "w:p": [...], ":@"?: {...} }`).
+ */
+export declare interface BodyBlock {
+    kind: BlockKind;
+    tag: string;
+    node: any;
+}
+
 export declare interface BookmarkEntry {
     id: number;
     name: string;
@@ -18,6 +31,9 @@ declare interface BorderSide {
     size?: number;
     color?: string;
 }
+
+/** Serialize the (possibly mutated) ordered document array back to XML. */
+export declare function buildOrderedDoc(doc: any[]): string;
 
 export declare interface CaptionEntry {
     label: string;
@@ -397,6 +413,31 @@ export declare class DocumentManager {
      * Inserts a Table into the document body at the given index (appends if omitted).
      */
     insertTable(table: Table, index?: number): Promise<void>;
+    /**
+     * Returns the body's ordered blocks (paragraphs / tables / drawings) in
+     * document order, EXCLUDING the trailing w:sectPr (which stays in the doc).
+     */
+    getBlocks(): Promise<BodyBlock[]>;
+    /**
+     * Replaces the body's editable children with `blocks` (in order), preserving
+     * the existing trailing w:sectPr, and writes document.xml.
+     */
+    saveBlocks(blocks: BodyBlock[]): Promise<void>;
+    /**
+     * Replaces the w:t run text of the editable block at `index` (must be a
+     * paragraph). Leaves all other blocks — tables, drawings — untouched and in
+     * their exact positions.
+     */
+    editParagraphText(index: number, text: string): Promise<void>;
+    /**
+     * Inserts `block` at editable position `index` (appends if index is out of
+     * range), keeping sectPr last. Use OrderedBody.makeParagraphNode to build a
+     * paragraph block node.
+     */
+    insertBlockAt(block: BodyBlock, index: number): Promise<void>;
+    /** Removes the editable block at `index`. */
+    deleteBlockAt(index: number): Promise<void>;
+    private _writeOrderedDoc;
     private _getBody;
     private _writeDoc;
 }
@@ -741,6 +782,13 @@ export declare interface LineNumberingOptions {
     restart?: "newPage" | "newSection" | "continuous";
 }
 
+/**
+ * Build an ordered `w:p` node from plain text + optional style/RTL, in the
+ * fast-xml-parser ordered shape:
+ * `<w:p><w:pPr>(pStyle)(bidi)</w:pPr><w:r><w:t xml:space="preserve">text</w:t></w:r></w:p>`
+ */
+export declare function makeParagraphNode(text: string, styleId?: string, rtl?: boolean): any;
+
 export declare const MARGIN_PRESETS: Record<MarginPreset, PageMargins>;
 
 export declare type MarginPreset = "normal" | "narrow" | "moderate" | "wide" | "mirrored";
@@ -829,6 +877,9 @@ export declare class MetadataManager {
      */
     setAppProperties(props: AppProperties): Promise<void>;
 }
+
+/** The tag name of an ordered node (the only key that isn't `:@`). */
+export declare function nodeTag(node: any): string;
 
 export declare interface NumberingDefinition {
     abstractNumId: string;
@@ -1280,6 +1331,25 @@ declare interface ParagraphProperties {
     "w:rPr"?: RunProperties;
 }
 
+/** The `w:val` of the paragraph's `w:pStyle`, or null. */
+export declare function paragraphStyleId(node: any): string | null;
+
+/** Concatenated `w:t` text of a paragraph node. */
+export declare function paragraphText(node: any): string;
+
+/**
+ * Parse a full `word/document.xml` into the ordered top-level node array and a
+ * reference to the body's ordered children array.
+ *
+ * `doc` is the value you mutate (in place, via `bodyChildren`) and then pass to
+ * {@link buildOrderedDoc}. `bodyChildren` is a *live reference* into `doc`, so
+ * splicing it mutates the document.
+ */
+export declare function parseOrderedDoc(xml: string): {
+    doc: any[];
+    bodyChildren: any[];
+};
+
 export declare class RelManager {
     zip: default_2;
     relsPath: RelsType;
@@ -1582,6 +1652,13 @@ export declare interface SectionPageSize {
     height: number;
     orientation?: "portrait" | "landscape";
 }
+
+/**
+ * Replace the text of a paragraph node in place: collapse its runs to a single
+ * `w:r > w:t` carrying `text`, preserving the paragraph's `w:pPr` (style, RTL,
+ * etc.) if present. Returns the same node for convenience.
+ */
+export declare function setParagraphText(node: any, text: string): any;
 
 export declare interface ShapeEntry {
     id: number;
@@ -2020,6 +2097,9 @@ declare interface TextNode {
     };
     _: string;
 }
+
+/** Map the body's ordered children to typed blocks (includes sectPr). */
+export declare function toBlocks(bodyChildren: any[]): BodyBlock[];
 
 export declare interface TocOptions {
     headingDepth?: number;
