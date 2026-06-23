@@ -10,14 +10,14 @@ export declare interface AppProperties {
 export declare type BlockKind = "paragraph" | "table" | "sectPr" | "other";
 
 /**
- * A single ordered body child.
- * `node` is the raw fast-xml-parser ordered node: an object whose only
- * non-`:@` key is the element tag (e.g. `{ "w:p": [...], ":@"?: {...} }`).
+ * A single ordered body child, stored as its exact original XML substring.
+ * `xml` is the verbatim slice of `document.xml` for this top-level child —
+ * including any whitespace/comment text captured as an "other" block.
  */
 export declare interface BodyBlock {
     kind: BlockKind;
     tag: string;
-    node: any;
+    xml: string;
 }
 
 export declare interface BookmarkEntry {
@@ -32,8 +32,8 @@ declare interface BorderSide {
     color?: string;
 }
 
-/** Serialize the (possibly mutated) ordered document array back to XML. */
-export declare function buildOrderedDoc(doc: any[]): string;
+/** Reassemble from a SplitDocument (or its parts). */
+export declare function buildOrderedDoc(split: SplitDocument): string;
 
 export declare interface CaptionEntry {
     label: string;
@@ -414,30 +414,32 @@ export declare class DocumentManager {
      */
     insertTable(table: Table, index?: number): Promise<void>;
     /**
-     * Returns the body's ordered blocks (paragraphs / tables / drawings) in
-     * document order, EXCLUDING the trailing w:sectPr (which stays in the doc).
+     * Returns the body's ordered editable blocks (paragraphs / tables /
+     * drawings) in document order, EXCLUDING the trailing w:sectPr (which stays
+     * in the document). Each block carries its exact original XML substring.
      */
     getBlocks(): Promise<BodyBlock[]>;
     /**
      * Replaces the body's editable children with `blocks` (in order), preserving
-     * the existing trailing w:sectPr, and writes document.xml.
+     * the existing trailing w:sectPr exactly, and writes document.xml. Callers
+     * pass only the editable blocks; the sectPr is re-appended automatically.
      */
     saveBlocks(blocks: BodyBlock[]): Promise<void>;
     /**
-     * Replaces the w:t run text of the editable block at `index` (must be a
-     * paragraph). Leaves all other blocks — tables, drawings — untouched and in
-     * their exact positions.
+     * Replaces the run text of the editable block at `index` (must be a
+     * paragraph). Rewrites ONLY that paragraph's XML substring; every other
+     * block — tables, drawings, sectPr — keeps its exact original bytes.
      */
     editParagraphText(index: number, text: string): Promise<void>;
     /**
-     * Inserts `block` at editable position `index` (appends if index is out of
-     * range), keeping sectPr last. Use OrderedBody.makeParagraphNode to build a
-     * paragraph block node.
+     * Inserts `block` at editable position `index` (appends before sectPr if the
+     * index is out of range), keeping sectPr last. Use
+     * OrderedBody.makeParagraphNode to build a paragraph block.
      */
     insertBlockAt(block: BodyBlock, index: number): Promise<void>;
     /** Removes the editable block at `index`. */
     deleteBlockAt(index: number): Promise<void>;
-    private _writeOrderedDoc;
+    private _writeBody;
     private _getBody;
     private _writeDoc;
 }
@@ -782,12 +784,64 @@ export declare interface LineNumberingOptions {
     restart?: "newPage" | "newSection" | "continuous";
 }
 
+/** Build a drawing (inline image) paragraph `BodyBlock`. */
+export declare function makeDrawingParagraphNode(relId: string, widthEmu: number, heightEmu: number, shapeId: number, name: string): BodyBlock;
+
 /**
- * Build an ordered `w:p` node from plain text + optional style/RTL, in the
- * fast-xml-parser ordered shape:
- * `<w:p><w:pPr>(pStyle)(bidi)</w:pPr><w:r><w:t xml:space="preserve">text</w:t></w:r></w:p>`
+ * Build a `<w:p>` paragraph wrapping an inline `<w:drawing>` that references an
+ * already-registered image relationship (`relId`, see MediaManager.insertImage).
+ *
+ * Namespaces are declared LOCALLY so the block is self-contained regardless of
+ * the host document: `xmlns:wp` + `xmlns:a` on `<wp:inline>`, `xmlns:pic` on
+ * `<pic:pic>`. `r:` is NOT redeclared — it is universally declared on
+ * `<w:document>`. A plain `<w:drawing>` is used (no `mc:AlternateContent`,
+ * which modern Word does not require for inline pictures).
+ *
+ * @param relId      The image relationship id (e.g. "rId7").
+ * @param widthEmu   Inline width in EMU (1 px @96dpi = 9525 EMU).
+ * @param heightEmu  Inline height in EMU.
+ * @param shapeId    A document-unique id for `wp:docPr` / `pic:cNvPr`.
+ * @param name       The picture name (escaped).
  */
-export declare function makeParagraphNode(text: string, styleId?: string, rtl?: boolean): any;
+export declare function makeDrawingParagraphXml(relId: string, widthEmu: number, heightEmu: number, shapeId: number, name: string): string;
+
+/**
+ * Build a paragraph `BodyBlock` (kept under the legacy export name
+ * `makeParagraphNode` for API stability). Now string-based.
+ */
+export declare function makeParagraphNode(text: string, styleId?: string, rtl?: boolean): BodyBlock;
+
+/**
+ * Build a `<w:p>` paragraph XML string from plain text + optional style/RTL:
+ * `<w:p>(<w:pPr>(<w:pStyle w:val="ID"/>)(<w:bidi/>)</w:pPr>)?<w:r><w:t xml:space="preserve">ESCAPED</w:t></w:r></w:p>`
+ */
+export declare function makeParagraphXml(text: string, styleId?: string, rtl?: boolean): string;
+
+/** Build a table `BodyBlock` from a grid of cell texts. */
+export declare function makeTableNode(rows: string[][], opts?: {
+    headerRow?: boolean;
+    rtl?: boolean;
+}): BodyBlock;
+
+/**
+ * Build a `<w:tbl>` XML string from a grid of cell texts.
+ *
+ * Reuses the existing `Table` class (the same path the export pipeline uses, via
+ * `docx-blocks.buildTable`) so the produced table is byte-identical to a
+ * natively built one:
+ *   - `w:tblPr` with single-line borders (top/bottom/left/right/insideH/insideV)
+ *     + `w:tblW` 100% (`w:type="pct" w:w="5000"`) + `w:bidiVisual` when `rtl`;
+ *   - `w:tblGrid` with N `w:gridCol` (N = the widest row);
+ *   - the first row marked as a shaded + bold header when `headerRow`;
+ *   - each cell `<w:tc><w:p><w:r>(<w:rPr><w:b/></w:rPr>)?<w:t xml:space="preserve">…</w:t></w:r></w:p></w:tc>`.
+ *
+ * Cell text escaping is delegated to the xml2js serializer (it escapes the
+ * predefined entities for the run text + attribute values).
+ */
+export declare function makeTableXml(rows: string[][], opts?: {
+    headerRow?: boolean;
+    rtl?: boolean;
+}): string;
 
 export declare const MARGIN_PRESETS: Record<MarginPreset, PageMargins>;
 
@@ -878,8 +932,15 @@ export declare class MetadataManager {
     setAppProperties(props: AppProperties): Promise<void>;
 }
 
-/** The tag name of an ordered node (the only key that isn't `:@`). */
-export declare function nodeTag(node: any): string;
+/**
+ * Scan a full `document.xml` for the highest existing drawing id (`wp:docPr @id`
+ * and `pic:cNvPr @id`) and return max+1 (minimum 1). Use it to assign a
+ * document-unique id to a newly inserted drawing.
+ */
+export declare function nextDrawingId(documentXml: string): number;
+
+/** The tag name of a block (compat shim — accepts a BodyBlock). */
+export declare function nodeTag(block: BodyBlock | string): string;
 
 export declare interface NumberingDefinition {
     abstractNumId: string;
@@ -1331,23 +1392,17 @@ declare interface ParagraphProperties {
     "w:rPr"?: RunProperties;
 }
 
-/** The `w:val` of the paragraph's `w:pStyle`, or null. */
-export declare function paragraphStyleId(node: any): string | null;
+/** Extract the `w:val` of the paragraph's `<w:pStyle>`, or null. */
+export declare function paragraphStyleId(xml: string): string | null;
 
-/** Concatenated `w:t` text of a paragraph node. */
-export declare function paragraphText(node: any): string;
+/** Concatenate the decoded text of every `<w:t ...>...</w:t>` in a block. */
+export declare function paragraphText(xml: string): string;
 
-/**
- * Parse a full `word/document.xml` into the ordered top-level node array and a
- * reference to the body's ordered children array.
- *
- * `doc` is the value you mutate (in place, via `bodyChildren`) and then pass to
- * {@link buildOrderedDoc}. `bodyChildren` is a *live reference* into `doc`, so
- * splicing it mutates the document.
- */
-export declare function parseOrderedDoc(xml: string): {
-    doc: any[];
-    bodyChildren: any[];
+/** Split a full document into its top-level body blocks. */
+export declare function parseOrderedDoc(documentXml: string): {
+    split: SplitDocument;
+    blocks: BodyBlock[];
+    bodyChildren: BodyBlock[];
 };
 
 export declare class RelManager {
@@ -1654,11 +1709,18 @@ export declare interface SectionPageSize {
 }
 
 /**
- * Replace the text of a paragraph node in place: collapse its runs to a single
- * `w:r > w:t` carrying `text`, preserving the paragraph's `w:pPr` (style, RTL,
- * etc.) if present. Returns the same node for convenience.
+ * Replace the text of a paragraph's XML string IN PLACE (operates only on the
+ * given paragraph substring — cannot affect any sibling block):
+ *
+ *  - If the paragraph contains a `<w:drawing>` / `<w:pict>` / `<w:object>`
+ *    (an inline image or embedded object), DO NOT strip runs. Instead replace
+ *    only the text inside the FIRST `<w:t>` (or append a text run after
+ *    `<w:pPr>` if there is no `<w:t>`), leaving the drawing runs intact.
+ *  - Otherwise (a plain text paragraph): preserve `<w:pPr>...</w:pPr>` if
+ *    present and replace ALL `<w:r>...</w:r>` runs with a single
+ *    `<w:r><w:t xml:space="preserve">ESCAPED</w:t></w:r>`.
  */
-export declare function setParagraphText(node: any, text: string): any;
+export declare function setParagraphText(paragraphXml: string, text: string): string;
 
 export declare interface ShapeEntry {
     id: number;
@@ -1712,6 +1774,18 @@ export declare interface ShapeSize {
 }
 
 export declare type ShapeType = "rect" | "roundRect" | "ellipse" | "triangle" | "diamond" | "line" | "rightArrow" | "leftArrow" | "star5" | "cloud" | "heart";
+
+/** The result of splitting a full `word/document.xml`. */
+declare interface SplitDocument {
+    /** Everything up to and including the `<w:body ...>` open tag. */
+    pre: string;
+    /** The `<w:body ...>` open tag itself (subset of `pre`, for convenience). */
+    bodyOpen: string;
+    /** Top-level children of `<w:body>`, in document order. */
+    blocks: BodyBlock[];
+    /** `</w:body>` and everything after it (trailing whitespace, `</w:document>`, …). */
+    post: string;
+}
 
 export declare interface StyleEntry {
     id: string;
@@ -2098,8 +2172,11 @@ declare interface TextNode {
     _: string;
 }
 
-/** Map the body's ordered children to typed blocks (includes sectPr). */
-export declare function toBlocks(bodyChildren: any[]): BodyBlock[];
+/**
+ * Pass-through classifier kept for compatibility. Filters out pure-whitespace
+ * "other" blocks would change semantics, so this returns every block as-is.
+ */
+export declare function toBlocks(bodyChildren: BodyBlock[]): BodyBlock[];
 
 export declare interface TocOptions {
     headingDepth?: number;

@@ -28,7 +28,17 @@
  * xml2js-based path used elsewhere).
  */
 
+import * as XmlUtils from "@/utils/xmlUtils";
+import { Table } from "@/core/files/table/index";
+
 const W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+
+// DrawingML / picture / wordprocessingDrawing namespace URIs. Declared LOCALLY
+// on the drawing block so it is self-contained regardless of the host document.
+const NS_A_DML = "http://schemas.openxmlformats.org/drawingml/2006/main";
+const NS_WP_DRAWING = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing";
+const NS_PIC = "http://schemas.openxmlformats.org/drawingml/2006/picture";
+const PICTURE_URI = "http://schemas.openxmlformats.org/drawingml/2006/picture";
 
 export type BlockKind = "paragraph" | "table" | "sectPr" | "other";
 
@@ -348,6 +358,171 @@ export function makeParagraphXml(text: string, styleId?: string, rtl?: boolean):
  */
 export function makeParagraphNode(text: string, styleId?: string, rtl?: boolean): BodyBlock {
   return { kind: "paragraph", tag: "w:p", xml: makeParagraphXml(text, styleId, rtl) };
+}
+
+// ─── Table construction ──────────────────────────────────────────────────────
+
+/**
+ * Build a `<w:tbl>` XML string from a grid of cell texts.
+ *
+ * Reuses the existing `Table` class (the same path the export pipeline uses, via
+ * `docx-blocks.buildTable`) so the produced table is byte-identical to a
+ * natively built one:
+ *   - `w:tblPr` with single-line borders (top/bottom/left/right/insideH/insideV)
+ *     + `w:tblW` 100% (`w:type="pct" w:w="5000"`) + `w:bidiVisual` when `rtl`;
+ *   - `w:tblGrid` with N `w:gridCol` (N = the widest row);
+ *   - the first row marked as a shaded + bold header when `headerRow`;
+ *   - each cell `<w:tc><w:p><w:r>(<w:rPr><w:b/></w:rPr>)?<w:t xml:space="preserve">…</w:t></w:r></w:p></w:tc>`.
+ *
+ * Cell text escaping is delegated to the xml2js serializer (it escapes the
+ * predefined entities for the run text + attribute values).
+ */
+export function makeTableXml(
+  rows: string[][],
+  opts?: { headerRow?: boolean; rtl?: boolean },
+): string {
+  const headerRow = opts?.headerRow ?? false;
+  const rtl = opts?.rtl ?? false;
+
+  const cols = Math.max(1, ...rows.map((r) => r.length));
+
+  // A cell with a single (optionally bold) run; the run text is passed via the
+  // xml2js charkey `_` so the serializer escapes it.
+  const mkCell = (text: string, bold: boolean) => {
+    const rPr = bold ? { "w:rPr": { "w:b": {} } } : {};
+    return {
+      "w:p": {
+        "w:r": {
+          ...rPr,
+          "w:t": { _: text ?? "", $: { "xml:space": "preserve" } },
+        },
+      },
+    };
+  };
+
+  const mkRow = (cells: string[], bold: boolean) => ({
+    "w:tc": Array.from({ length: cols }, (_, c) => mkCell(cells[c] ?? "", bold)),
+  });
+
+  const tableObj: any = {
+    "w:tblPr": {},
+    "w:tblGrid": { "w:gridCol": Array.from({ length: cols }, () => ({})) },
+    "w:tr": rows.map((r, i) => mkRow(r, headerRow && i === 0)),
+  };
+
+  const t = new Table(tableObj);
+  t.setTableBorders({
+    top: { style: "single", size: 4, color: "808080" },
+    bottom: { style: "single", size: 4, color: "808080" },
+    left: { style: "single", size: 4, color: "808080" },
+    right: { style: "single", size: 4, color: "808080" },
+    insideH: { style: "single", size: 2, color: "BFBFBF" },
+    insideV: { style: "single", size: 2, color: "BFBFBF" },
+  });
+  t.setTableWidth(100, "pct");
+  if (rtl) t.setTableDirection(true);
+  if (headerRow && rows.length > 0) t.setHeaderRow(0, "D9D9D9");
+
+  // Serialize compactly (no pretty whitespace) for parity with the string model.
+  return XmlUtils.buildXml(t.toObject(), {
+    rootName: "w:tbl",
+    headless: true,
+    pretty: false,
+  });
+}
+
+/** Build a table `BodyBlock` from a grid of cell texts. */
+export function makeTableNode(
+  rows: string[][],
+  opts?: { headerRow?: boolean; rtl?: boolean },
+): BodyBlock {
+  return { kind: "table", tag: "w:tbl", xml: makeTableXml(rows, opts) };
+}
+
+// ─── Drawing (inline image) construction ─────────────────────────────────────
+
+/**
+ * Build a `<w:p>` paragraph wrapping an inline `<w:drawing>` that references an
+ * already-registered image relationship (`relId`, see MediaManager.insertImage).
+ *
+ * Namespaces are declared LOCALLY so the block is self-contained regardless of
+ * the host document: `xmlns:wp` + `xmlns:a` on `<wp:inline>`, `xmlns:pic` on
+ * `<pic:pic>`. `r:` is NOT redeclared — it is universally declared on
+ * `<w:document>`. A plain `<w:drawing>` is used (no `mc:AlternateContent`,
+ * which modern Word does not require for inline pictures).
+ *
+ * @param relId      The image relationship id (e.g. "rId7").
+ * @param widthEmu   Inline width in EMU (1 px @96dpi = 9525 EMU).
+ * @param heightEmu  Inline height in EMU.
+ * @param shapeId    A document-unique id for `wp:docPr` / `pic:cNvPr`.
+ * @param name       The picture name (escaped).
+ */
+export function makeDrawingParagraphXml(
+  relId: string,
+  widthEmu: number,
+  heightEmu: number,
+  shapeId: number,
+  name: string,
+): string {
+  const cx = String(Math.round(widthEmu));
+  const cy = String(Math.round(heightEmu));
+  const id = String(shapeId);
+  const safeName = escapeXmlText(name);
+  const safeRelId = escapeXmlText(relId);
+
+  return (
+    `<w:p><w:r><w:drawing>` +
+    `<wp:inline distT="0" distB="0" distL="0" distR="0"` +
+    ` xmlns:wp="${NS_WP_DRAWING}" xmlns:a="${NS_A_DML}">` +
+    `<wp:extent cx="${cx}" cy="${cy}"/>` +
+    `<wp:effectExtent l="0" t="0" r="0" b="0"/>` +
+    `<wp:docPr id="${id}" name="${safeName}"/>` +
+    `<wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/></wp:cNvGraphicFramePr>` +
+    `<a:graphic>` +
+    `<a:graphicData uri="${PICTURE_URI}">` +
+    `<pic:pic xmlns:pic="${NS_PIC}">` +
+    `<pic:nvPicPr><pic:cNvPr id="${id}" name="${safeName}"/><pic:cNvPicPr/></pic:nvPicPr>` +
+    `<pic:blipFill><a:blip r:embed="${safeRelId}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>` +
+    `<pic:spPr>` +
+    `<a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm>` +
+    `<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>` +
+    `</pic:spPr>` +
+    `</pic:pic>` +
+    `</a:graphicData>` +
+    `</a:graphic>` +
+    `</wp:inline></w:drawing></w:r></w:p>`
+  );
+}
+
+/** Build a drawing (inline image) paragraph `BodyBlock`. */
+export function makeDrawingParagraphNode(
+  relId: string,
+  widthEmu: number,
+  heightEmu: number,
+  shapeId: number,
+  name: string,
+): BodyBlock {
+  return {
+    kind: "paragraph",
+    tag: "w:p",
+    xml: makeDrawingParagraphXml(relId, widthEmu, heightEmu, shapeId, name),
+  };
+}
+
+/**
+ * Scan a full `document.xml` for the highest existing drawing id (`wp:docPr @id`
+ * and `pic:cNvPr @id`) and return max+1 (minimum 1). Use it to assign a
+ * document-unique id to a newly inserted drawing.
+ */
+export function nextDrawingId(documentXml: string): number {
+  let max = 0;
+  const re = /<(?:wp:docPr|pic:cNvPr)\b[^>]*\bid="(\d+)"/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(documentXml)) !== null) {
+    const n = parseInt(m[1], 10);
+    if (Number.isFinite(n) && n > max) max = n;
+  }
+  return max + 1;
 }
 
 // ─── Paragraph inspection ────────────────────────────────────────────────────
