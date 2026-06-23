@@ -4,8 +4,10 @@ import AdmZip from "adm-zip";
 const DOCUMENT_PATH = "word/document.xml";
 
 // Namespace URIs
-const NS_A = "http://schemas.openxmlformats.org/drawingml/2006/main";
-const NS_W = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+const NS_A  = "http://schemas.openxmlformats.org/drawingml/2006/main";
+const NS_W  = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+const NS_R  = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+const NS_WP = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing";
 
 // Unit helpers — 1 inch = 914400 EMU
 export const EMU_PER_INCH = 914400;
@@ -97,11 +99,13 @@ export class ShapeManager {
   }
 
   private async writeDocument(obj: any): Promise<void> {
-    // Ensure xmlns:a is declared at the root so all DrawingML elements resolve correctly
+    // Ensure DrawingML / relationship / wordprocessingDrawing namespaces are declared at
+    // the root so all DrawingML elements (and r:embed on inline pictures) resolve correctly.
     if (!obj["w:document"]["$"]) obj["w:document"]["$"] = {};
-    if (!obj["w:document"]["$"]["xmlns:a"]) {
-      obj["w:document"]["$"]["xmlns:a"] = NS_A;
-    }
+    const rootAttrs = obj["w:document"]["$"];
+    if (!rootAttrs["xmlns:a"])  rootAttrs["xmlns:a"]  = NS_A;
+    if (!rootAttrs["xmlns:r"])  rootAttrs["xmlns:r"]  = NS_R;
+    if (!rootAttrs["xmlns:wp"]) rootAttrs["xmlns:wp"] = NS_WP;
 
     const xml = XmlUtils.buildXml(obj["w:document"], {
       rootName: "w:document",
@@ -505,6 +509,43 @@ export class ShapeManager {
       });
     }
 
+    return id;
+  }
+
+  /** Insert an inline picture referencing an already-registered image relId
+   *  (see MediaManager.insertImage). width/height are in EMU (1 px @96dpi = 9525 EMU). */
+  public async insertImage(
+    relId: string,
+    opts: { width: number; height: number; name?: string; paragraphIndex?: number },
+  ): Promise<number> {
+    const id = await this.nextShapeId();
+    const name = opts.name ?? `Image ${id}`;
+    const size: ShapeSize = { width: opts.width, height: opts.height };
+    const graphicData = {
+      $: { uri: "http://schemas.openxmlformats.org/drawingml/2006/picture" },
+      "pic:pic": {
+        $: { "xmlns:pic": "http://schemas.openxmlformats.org/drawingml/2006/picture" },
+        "pic:nvPicPr": {
+          "pic:cNvPr": { $: { id: String(id), name } },
+          "pic:cNvPicPr": {},
+        },
+        "pic:blipFill": {
+          "a:blip": { $: { "r:embed": relId } },
+          "a:stretch": { "a:fillRect": {} },
+        },
+        "pic:spPr": {
+          "a:xfrm": {
+            "a:off": { $: { x: "0", y: "0" } },
+            "a:ext": { $: { cx: String(size.width), cy: String(size.height) } },
+          },
+          "a:prstGeom": { $: { prst: "rect" }, "a:avLst": {} },
+        },
+      },
+    };
+    const drawing = this.buildInline(id, name, size, graphicData);
+    const obj = await this.readDocument();
+    this.insertDrawingParagraph(obj, drawing, opts.paragraphIndex);
+    await this.writeDocument(obj);
     return id;
   }
 
