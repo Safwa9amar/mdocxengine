@@ -45,9 +45,7 @@ export default defineConfig({
       },
     },
     commonjsOptions: {
-      // Include the vendored (CommonJS) fast-xml-parser so Rollup converts its
-      // named exports for the ESM build.
-      include: [/node_modules/, /vendor[\\/]fast-xml-parser/, /vendor[\\/]strnum/],
+      include: [/node_modules/],
       transformMixedEsModules: true,
     },
     rollupOptions : {

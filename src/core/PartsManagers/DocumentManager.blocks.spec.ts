@@ -19,7 +19,7 @@ function currentXml(zip: AdmZip): string {
   return zip.readAsText("word/document.xml")!;
 }
 
-describe("DocumentManager — ordered blocks", () => {
+describe("DocumentManager — ordered blocks (string model)", () => {
   let zip: AdmZip;
   let dm: DocumentManager;
 
@@ -37,8 +37,11 @@ describe("DocumentManager — ordered blocks", () => {
       "table",
       "paragraph",
     ]);
-    expect(paragraphText(blocks[0].node)).toBe("Intro");
-    expect(paragraphText(blocks[2].node)).toBe("Middle");
+    expect(paragraphText(blocks[0].xml)).toBe("Intro");
+    expect(paragraphText(blocks[2].xml)).toBe("Middle");
+    // each block carries its exact substring
+    expect(blocks[1].xml).toContain("TableA");
+    expect(blocks[4].xml).toContain("w:drawing");
   });
 
   test("editParagraphText changes only that paragraph; tables stay in place", async () => {
@@ -52,8 +55,8 @@ describe("DocumentManager — ordered blocks", () => {
       "table",
       "paragraph",
     ]);
-    expect(paragraphText(blocks[0].node)).toBe("Intro"); // untouched
-    expect(paragraphText(blocks[2].node)).toBe("CHANGED");
+    expect(paragraphText(blocks[0].xml)).toBe("Intro"); // untouched
+    expect(paragraphText(blocks[2].xml)).toBe("CHANGED");
 
     const xml = currentXml(zip);
     // Both tables still present + their cell text intact + same relative order.
@@ -62,6 +65,16 @@ describe("DocumentManager — ordered blocks", () => {
     expect(xml).toContain("TableB");
     expect(xml.indexOf("TableA")).toBeLessThan(xml.indexOf("CHANGED"));
     expect(xml.indexOf("CHANGED")).toBeLessThan(xml.indexOf("TableB"));
+  });
+
+  test("editParagraphText rewrites ONLY the target block's bytes", async () => {
+    const before = currentXml(zip);
+    await dm.editParagraphText(0, "Intro2");
+    const after = currentXml(zip);
+    // Everything except the first paragraph is byte-identical.
+    const beforeAfterFirstP = before.slice(before.indexOf("</w:p>"));
+    const afterAfterFirstP = after.slice(after.indexOf("</w:p>"));
+    expect(afterAfterFirstP).toBe(beforeAfterFirstP);
   });
 
   test("editParagraphText throws when target block is not a paragraph", async () => {
@@ -73,7 +86,7 @@ describe("DocumentManager — ordered blocks", () => {
   });
 
   test("insertBlockAt inserts a paragraph at the right spot; order preserved", async () => {
-    await dm.insertBlockAt({ kind: "paragraph", tag: "w:p", node: makeParagraphNode("NEW") }, 1);
+    await dm.insertBlockAt(makeParagraphNode("NEW"), 1);
 
     const blocks = await dm.getBlocks();
     expect(blocks.map((b) => b.kind)).toEqual([
@@ -84,7 +97,7 @@ describe("DocumentManager — ordered blocks", () => {
       "table",
       "paragraph", // image
     ]);
-    expect(paragraphText(blocks[1].node)).toBe("NEW");
+    expect(paragraphText(blocks[1].xml)).toBe("NEW");
     // sectPr stays last + only one of it.
     const xml = currentXml(zip);
     expect(xml.split("<w:sectPr>").length - 1).toBe(1);
@@ -92,10 +105,10 @@ describe("DocumentManager — ordered blocks", () => {
   });
 
   test("insertBlockAt with large index appends before sectPr", async () => {
-    await dm.insertBlockAt({ kind: "paragraph", tag: "w:p", node: makeParagraphNode("LAST") }, 999);
+    await dm.insertBlockAt(makeParagraphNode("LAST"), 999);
     const blocks = await dm.getBlocks();
     expect(blocks).toHaveLength(6);
-    expect(paragraphText(blocks[5].node)).toBe("LAST");
+    expect(paragraphText(blocks[5].xml)).toBe("LAST");
     const xml = currentXml(zip);
     expect(xml.indexOf("LAST")).toBeLessThan(xml.indexOf("<w:sectPr>"));
   });
@@ -110,7 +123,7 @@ describe("DocumentManager — ordered blocks", () => {
       "table",
       "paragraph",
     ]);
-    expect(paragraphText(blocks[1].node)).toBe("Middle");
+    expect(paragraphText(blocks[1].xml)).toBe("Middle");
     const xml = currentXml(zip);
     expect(xml).not.toContain(">Intro<");
     expect(xml.split("<w:tbl>").length - 1).toBe(2); // tables intact
@@ -128,21 +141,15 @@ describe("DocumentManager — ordered blocks", () => {
     // drawing paragraph still the last editable block
     const blocks = await dm.getBlocks();
     expect(blocks[blocks.length - 1].tag).toBe("w:p");
-    expect(JSON.stringify(blocks[blocks.length - 1].node)).toContain("w:drawing");
+    expect(blocks[blocks.length - 1].xml).toContain("w:drawing");
   });
 
-  test("saveBlocks round-trips the same blocks losslessly (order + tables + sectPr)", async () => {
-    const before = await dm.getBlocks();
-    await dm.saveBlocks(before);
-    const after = await dm.getBlocks();
-    expect(after.map((b) => b.kind)).toEqual(before.map((b) => b.kind));
-
-    const xml = currentXml(zip);
-    expect(xml.split("<w:tbl>").length - 1).toBe(2);
-    expect(xml.split("<w:sectPr>").length - 1).toBe(1);
-    expect(xml).toContain("Intro");
-    expect(xml).toContain("Middle");
-    expect(xml).toContain('r:embed="rId7"');
+  test("saveBlocks round-trips the same blocks BYTE-IDENTICALLY", async () => {
+    const before = currentXml(zip);
+    const blocks = await dm.getBlocks();
+    await dm.saveBlocks(blocks);
+    const after = currentXml(zip);
+    expect(after).toBe(before);
   });
 
   test("saveBlocks reorders editable blocks while keeping sectPr last", async () => {
@@ -151,10 +158,11 @@ describe("DocumentManager — ordered blocks", () => {
     await dm.saveBlocks(reordered);
 
     const after = await dm.getBlocks();
-    expect(paragraphText(after[0].node)).toBe("Middle");
-    expect(paragraphText(after[1].node)).toBe("Intro");
+    expect(paragraphText(after[0].xml)).toBe("Middle");
+    expect(paragraphText(after[1].xml)).toBe("Intro");
     const xml = currentXml(zip);
     // sectPr remained last.
     expect(xml.indexOf("<w:sectPr>")).toBeGreaterThan(xml.lastIndexOf("</w:tbl>"));
+    expect(xml.split("<w:sectPr>").length - 1).toBe(1);
   });
 });

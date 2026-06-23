@@ -2,9 +2,8 @@ import * as XmlUtils from "@/utils/xmlUtils";
 import Paragraph from "@/core/files/paragraph/index";
 import { Table } from "@/core/files/table/index";
 import {
-  parseOrderedDoc,
-  buildOrderedDoc,
-  toBlocks,
+  splitDocument,
+  assembleDocument,
   setParagraphText,
   type BodyBlock,
 } from "@/core/files/body/OrderedBody";
@@ -225,98 +224,115 @@ export default class DocumentManager {
     await this._writeDoc(docObj);
   }
 
-  // ─── Ordered body-block API (order-faithful, via OrderedBody) ─────────────
+  // ─── Ordered body-block API (order-faithful, string-level OrderedBody) ────
   //
   // This is a SEPARATE representation from the xml2js-based getParagraphs /
   // saveChanges path above. It reads word/document.xml as an ordered list of
-  // body children (paragraphs, tables, drawing-bearing paragraphs) and writes
-  // it back preserving order + content exactly, including images and the
-  // trailing w:sectPr. `index` always refers to the position in the ordered
-  // *editable* block list (everything except sectPr).
+  // body children (paragraphs, tables, drawing-bearing paragraphs), each kept
+  // as its EXACT original XML substring, and writes it back preserving order +
+  // content byte-for-byte — including images and the trailing w:sectPr.
+  //
+  // INDEX SEMANTICS: `index` refers to the position in the ordered *editable*
+  // block list, which is every top-level body child EXCEPT the trailing
+  // w:sectPr (it stays in the document but is never indexable). Because an
+  // untouched block is never re-serialized, editing one paragraph can never
+  // corrupt a sibling table or drawing.
 
   /**
-   * Returns the body's ordered blocks (paragraphs / tables / drawings) in
-   * document order, EXCLUDING the trailing w:sectPr (which stays in the doc).
+   * Returns the body's ordered editable blocks (paragraphs / tables /
+   * drawings) in document order, EXCLUDING the trailing w:sectPr (which stays
+   * in the document). Each block carries its exact original XML substring.
    */
   public async getBlocks(): Promise<BodyBlock[]> {
     const xml = this.zip.readAsText(DOC_PATH);
     if (!xml) return [];
-    const { bodyChildren } = parseOrderedDoc(xml);
-    return toBlocks(bodyChildren).filter((b) => b.kind !== "sectPr");
+    return splitDocument(xml).blocks.filter((b) => b.kind !== "sectPr");
   }
 
   /**
    * Replaces the body's editable children with `blocks` (in order), preserving
-   * the existing trailing w:sectPr, and writes document.xml.
+   * the existing trailing w:sectPr exactly, and writes document.xml. Callers
+   * pass only the editable blocks; the sectPr is re-appended automatically.
    */
   public async saveBlocks(blocks: BodyBlock[]): Promise<void> {
     const xml = this.zip.readAsText(DOC_PATH);
     if (!xml) return;
-    const { doc, bodyChildren } = parseOrderedDoc(xml);
+    const split = splitDocument(xml);
 
-    const sectPr = toBlocks(bodyChildren).find((b) => b.kind === "sectPr");
-    const next = blocks.map((b) => b.node);
-    if (sectPr) next.push(sectPr.node);
+    const sectPr = split.blocks.filter((b) => b.kind === "sectPr");
+    const next = [...blocks, ...sectPr];
 
-    // Mutate the live body-children array in place so `doc` reflects the change.
-    bodyChildren.length = 0;
-    bodyChildren.push(...next);
-
-    await this._writeOrderedDoc(doc);
+    this._writeBody({ ...split, blocks: next });
   }
 
   /**
-   * Replaces the w:t run text of the editable block at `index` (must be a
-   * paragraph). Leaves all other blocks — tables, drawings — untouched and in
-   * their exact positions.
+   * Replaces the run text of the editable block at `index` (must be a
+   * paragraph). Rewrites ONLY that paragraph's XML substring; every other
+   * block — tables, drawings, sectPr — keeps its exact original bytes.
    */
   public async editParagraphText(index: number, text: string): Promise<void> {
     const xml = this.zip.readAsText(DOC_PATH);
     if (!xml) return;
-    const { doc, bodyChildren } = parseOrderedDoc(xml);
+    const split = splitDocument(xml);
 
-    const editable = toBlocks(bodyChildren).filter((b) => b.kind !== "sectPr");
-    const block = editable[index];
-    if (!block) throw new Error(`editParagraphText: no block at index ${index}`);
+    const editablePositions = split.blocks
+      .map((b, i) => ({ i, kind: b.kind }))
+      .filter((e) => e.kind !== "sectPr")
+      .map((e) => e.i);
+
+    const pos = editablePositions[index];
+    if (pos === undefined) {
+      throw new Error(`editParagraphText: no block at index ${index}`);
+    }
+    const block = split.blocks[pos];
     if (block.kind !== "paragraph") {
-      throw new Error(`editParagraphText: block at index ${index} is a ${block.kind}, not a paragraph`);
+      throw new Error(
+        `editParagraphText: block at index ${index} is a ${block.kind}, not a paragraph`,
+      );
     }
 
-    setParagraphText(block.node, text);
-    await this._writeOrderedDoc(doc);
+    block.xml = setParagraphText(block.xml, text);
+    this._writeBody(split);
   }
 
   /**
-   * Inserts `block` at editable position `index` (appends if index is out of
-   * range), keeping sectPr last. Use OrderedBody.makeParagraphNode to build a
-   * paragraph block node.
+   * Inserts `block` at editable position `index` (appends before sectPr if the
+   * index is out of range), keeping sectPr last. Use
+   * OrderedBody.makeParagraphNode to build a paragraph block.
    */
   public async insertBlockAt(block: BodyBlock, index: number): Promise<void> {
     const xml = this.zip.readAsText(DOC_PATH);
     if (!xml) return;
-    const { doc, bodyChildren } = parseOrderedDoc(xml);
+    const split = splitDocument(xml);
 
-    // Find where sectPr sits among the raw children (so we never insert past it).
-    const sectPrPos = bodyChildren.findIndex(
-      (n) => toBlocks([n])[0].kind === "sectPr",
-    );
-    const editableCount =
-      sectPrPos === -1 ? bodyChildren.length : sectPrPos;
+    const editablePositions = split.blocks
+      .map((b, i) => ({ i, kind: b.kind }))
+      .filter((e) => e.kind !== "sectPr")
+      .map((e) => e.i);
 
-    const target = index < 0 ? 0 : Math.min(index, editableCount);
-    bodyChildren.splice(target, 0, block.node);
+    let target: number;
+    if (index <= 0) {
+      target = editablePositions[0] ?? split.blocks.length;
+    } else if (index >= editablePositions.length) {
+      // Append after the last editable block (i.e. before any sectPr).
+      const last = editablePositions[editablePositions.length - 1];
+      target = last === undefined ? split.blocks.length : last + 1;
+    } else {
+      target = editablePositions[index];
+    }
 
-    await this._writeOrderedDoc(doc);
+    split.blocks.splice(target, 0, block);
+    this._writeBody(split);
   }
 
   /** Removes the editable block at `index`. */
   public async deleteBlockAt(index: number): Promise<void> {
     const xml = this.zip.readAsText(DOC_PATH);
     if (!xml) return;
-    const { doc, bodyChildren } = parseOrderedDoc(xml);
+    const split = splitDocument(xml);
 
-    const editablePositions = bodyChildren
-      .map((n, i) => ({ i, kind: toBlocks([n])[0].kind }))
+    const editablePositions = split.blocks
+      .map((b, i) => ({ i, kind: b.kind }))
       .filter((e) => e.kind !== "sectPr")
       .map((e) => e.i);
 
@@ -324,15 +340,18 @@ export default class DocumentManager {
     if (pos === undefined) {
       throw new Error(`deleteBlockAt: no block at index ${index}`);
     }
-    bodyChildren.splice(pos, 1);
-
-    await this._writeOrderedDoc(doc);
+    split.blocks.splice(pos, 1);
+    this._writeBody(split);
   }
 
   // ─── Private helpers ──────────────────────────────────────────────────────
 
-  private async _writeOrderedDoc(doc: any[]): Promise<void> {
-    const newXml = buildOrderedDoc(doc);
+  private _writeBody(split: {
+    pre: string;
+    blocks: BodyBlock[];
+    post: string;
+  }): void {
+    const newXml = assembleDocument(split);
     this.zip.addFile(DOC_PATH, Buffer.from(newXml, "utf-8"));
   }
 

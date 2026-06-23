@@ -20,7 +20,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Mdocxengine } from "../src/index";
-import { parseOrderedDoc, nodeTag } from "../src/core/files/body/OrderedBody";
+import { parseOrderedDoc, nodeTag, paragraphText } from "../src/core/files/body/OrderedBody";
 
 const DOC_PATH = "word/document.xml";
 
@@ -87,13 +87,23 @@ function seqEqual(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((v, i) => v === b[i]);
 }
 
+const EMBED_RE = /<w:(?:drawing|pict|object)\b/;
+const EDIT_SENTINEL = "MDOCX_RT_SENTINEL_4B7";
+
 interface Result {
   file: string;
   exists: boolean;
+  // identity round-trip
   order?: boolean;
   tables?: boolean;
   media?: boolean;
   textOk?: boolean;
+  identityBytes?: boolean; // document.xml byte-identical after saveBlocks(same)
+  // edit round-trip (editParagraphText on a clean paragraph)
+  editTables?: boolean;
+  editMedia?: boolean;
+  editOtherText?: boolean; // every non-edited paragraph's text unchanged
+  editSentinel?: boolean; // edited paragraph now reads exactly the sentinel
   error?: string;
   blockCount?: number;
   tableTotal?: number; // total <w:tbl> incl. nested
@@ -108,6 +118,7 @@ async function verifyFile(file: string, tmpRoot: string): Promise<Result> {
   const base = path.basename(file).replace(/[^\w.-]+/g, "_");
   const inCopy = path.join(tmpRoot, `in_${base}`);
   const outCopy = path.join(tmpRoot, `out_${base}`);
+  const editCopy = path.join(tmpRoot, `edit_${base}`);
 
   // 1. copy original to temp (read-only on the original).
   fs.copyFileSync(file, inCopy);
@@ -116,17 +127,62 @@ async function verifyFile(file: string, tmpRoot: string): Promise<Result> {
     // before facts
     const beforeZip = new AdmZip(inCopy);
     const before = factsFromZip(beforeZip);
-    const totalTbl = (beforeZip.readAsText(DOC_PATH)?.match(/<w:tbl>/g) ?? []).length;
+    const beforeDocXml = beforeZip.readAsText(DOC_PATH) ?? "";
+    const totalTbl = (beforeDocXml.match(/<w:tbl>/g) ?? []).length;
 
-    // 2-4. identity round-trip through the engine.
+    // ── IDENTITY round-trip: getBlocks → saveBlocks(same) → reload. ──
     const eng = await Mdocxengine.loadFromFile(inCopy);
     const blocks = await eng.document.getBlocks();
     await eng.document.saveBlocks(blocks);
     await eng.saveToFile(outCopy);
 
-    // 5. after facts.
     const afterZip = new AdmZip(outCopy);
     const after = factsFromZip(afterZip);
+    const afterDocXml = afterZip.readAsText(DOC_PATH) ?? "";
+
+    // ── EDIT round-trip: editParagraphText on a CLEAN paragraph, reload,
+    //    assert tables/media/other-text unchanged + sentinel landed. ──
+    fs.copyFileSync(file, editCopy);
+    const eng2 = await Mdocxengine.loadFromFile(editCopy);
+    const blocks2 = await eng2.document.getBlocks();
+    const beforeTexts = blocks2.map((b) =>
+      b.kind === "paragraph" ? paragraphText(b.xml) : null,
+    );
+    // first clean (image-free, non-empty) paragraph; fall back to first paragraph
+    let editIdx = blocks2.findIndex(
+      (b) =>
+        b.kind === "paragraph" &&
+        !EMBED_RE.test(b.xml) &&
+        paragraphText(b.xml).trim().length > 0,
+    );
+    if (editIdx === -1) editIdx = blocks2.findIndex((b) => b.kind === "paragraph");
+
+    let editTables: boolean | undefined;
+    let editMedia: boolean | undefined;
+    let editOtherText: boolean | undefined;
+    let editSentinel: boolean | undefined;
+
+    if (editIdx !== -1) {
+      await eng2.document.editParagraphText(editIdx, EDIT_SENTINEL);
+      const editTmpOut = path.join(tmpRoot, `editout_${base}`);
+      await eng2.saveToFile(editTmpOut);
+
+      const editZip = new AdmZip(editTmpOut);
+      const editDocXml = editZip.readAsText(DOC_PATH) ?? "";
+      const editFacts = factsFromZip(editZip);
+      const editEng = await Mdocxengine.loadFromFile(editTmpOut);
+      const editBlocks = await editEng.document.getBlocks();
+      const afterTexts = editBlocks.map((b) =>
+        b.kind === "paragraph" ? paragraphText(b.xml) : null,
+      );
+
+      editTables = totalTbl === (editDocXml.match(/<w:tbl>/g) ?? []).length;
+      editMedia = seqEqual(before.media, editFacts.media);
+      editSentinel = paragraphText(editBlocks[editIdx].xml) === EDIT_SENTINEL;
+      editOtherText =
+        afterTexts.length === beforeTexts.length &&
+        afterTexts.every((t, i) => i === editIdx || t === beforeTexts[i]);
+    }
 
     return {
       file,
@@ -138,6 +194,11 @@ async function verifyFile(file: string, tmpRoot: string): Promise<Result> {
       tables: before.tblCount === after.tblCount,
       media: seqEqual(before.media, after.media),
       textOk: before.text === after.text,
+      identityBytes: beforeDocXml === afterDocXml,
+      editTables,
+      editMedia,
+      editOtherText,
+      editSentinel,
     };
   } catch (err: any) {
     return { file, exists: true, error: err?.stack ?? String(err) };
@@ -168,12 +229,15 @@ async function main() {
       console.log(`FAIL  (error)    ${name}\n        ${r.error.split("\n").slice(0, 4).join("\n        ")}`);
       continue;
     }
-    const pass = r.order && r.tables && r.media && r.textOk;
+    const identityPass = r.order && r.tables && r.media && r.textOk && r.identityBytes;
+    const editPass = r.editTables && r.editMedia && r.editOtherText && r.editSentinel;
+    const pass = identityPass && editPass;
     if (!pass) allPass = false;
     const flag = (b?: boolean) => (b ? "ok " : "XX ");
     console.log(
       `${pass ? "PASS" : "FAIL"}  ${name}\n` +
-        `        order:${flag(r.order)} tables:${flag(r.tables)} media:${flag(r.media)} text:${flag(r.textOk)}` +
+        `        identity: order:${flag(r.order)} tables:${flag(r.tables)} media:${flag(r.media)} text:${flag(r.textOk)} bytes:${flag(r.identityBytes)}\n` +
+        `        edit:     tables:${flag(r.editTables)} media:${flag(r.editMedia)} otherText:${flag(r.editOtherText)} sentinel:${flag(r.editSentinel)}` +
         `   [blocks:${r.blockCount} tbl:${r.tableTotal} media:${r.mediaCount}]`,
     );
   }
