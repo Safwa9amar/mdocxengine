@@ -121,6 +121,17 @@ export {
 export { default as Paragraph } from "./core/files/paragraph/index";
 export { Run } from "./core/files/paragraph/Run";
 export { Table } from "./core/files/table/index";
+export {
+  parseOrderedDoc,
+  buildOrderedDoc,
+  toBlocks,
+  makeParagraphNode,
+  paragraphText,
+  paragraphStyleId,
+  setParagraphText,
+  nodeTag,
+} from "./core/files/body/OrderedBody";
+export type { BodyBlock, BlockKind } from "./core/files/body/OrderedBody";
 export type { StyleEntry } from "./core/PartsManagers/StylesManager";
 export type { NumberingDefinition } from "./core/PartsManagers/NumberingManager";
 export type { CoreProperties, AppProperties } from "./core/PartsManagers/MetadataManager";
