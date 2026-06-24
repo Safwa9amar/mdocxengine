@@ -21,13 +21,15 @@ import { splitDocument, paragraphText } from "../files/body/OrderedBody";
  * This FAILS on the old implementation (tables drop 4→2) and PASSES on the
  * string splitter. The original template is never mutated (temp copy only).
  */
-const TEMPLATE =
-  "/Users/hamzasafwan/modakerati-server/assets/templates/elbayadh-staps-template.docx";
+// Real-template regression fixture. Point ELBAYADH_TEMPLATE_DOCX at a copy of
+// the El Bayadh STAPS template (the .docx lives in the modakerati-server repo,
+// not here) to run it; the suite cleanly skips when the env var is unset.
+const TEMPLATE = process.env.ELBAYADH_TEMPLATE_DOCX ?? "";
 const DOC_PATH = "word/document.xml";
 const SENTINEL = "MDOCX_SENTINEL_9F3A21";
 const EMBED_RE = /<w:(?:drawing|pict|object)\b/;
 
-const exists = fs.existsSync(TEMPLATE);
+const exists = !!TEMPLATE && fs.existsSync(TEMPLATE);
 
 function tblCount(xml: string): number {
   return (xml.match(/<w:tbl>/g) ?? []).length;

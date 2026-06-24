@@ -24,13 +24,13 @@ import { parseOrderedDoc, nodeTag, paragraphText } from "../src/core/files/body/
 
 const DOC_PATH = "word/document.xml";
 
-const DEFAULT_FILES = [
-  "/Users/hamzasafwan/Downloads/هيكل المذكرة.docx",
-  "/Users/hamzasafwan/modakerati-server/assets/templates/elbayadh-staps-template.docx",
-  "/Users/hamzasafwan/Downloads/memoire qualite final.docx",
-  "/Users/hamzasafwan/Downloads/مذكرة_بلعربي_علي_-_النسخة_النهائية.docx",
-  "/Users/hamzasafwan/Downloads/الجانب_التطبيقي_بوصبيع_قويدر_v3_with_charts.docx",
-];
+// Provide one or more .docx paths as CLI args, e.g.
+//   npx tsx scripts/verify-roundtrip.ts a.docx b.docx
+// or set MDOCX_VERIFY_FILES to a path-separator-delimited list.
+const DEFAULT_FILES = (process.env.MDOCX_VERIFY_FILES ?? "")
+  .split(path.delimiter)
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 interface DocFacts {
   bodyTagSeq: string[];
@@ -208,6 +208,13 @@ async function verifyFile(file: string, tmpRoot: string): Promise<Result> {
 async function main() {
   const args = process.argv.slice(2);
   const files = args.length > 0 ? args : DEFAULT_FILES;
+  if (files.length === 0) {
+    console.log(
+      "Usage: npx tsx scripts/verify-roundtrip.ts <file1.docx> [file2.docx ...]\n" +
+        "   or: MDOCX_VERIFY_FILES=\"a.docx:b.docx\" npx tsx scripts/verify-roundtrip.ts",
+    );
+    return;
+  }
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mdocx-rt-"));
 
   const results: Result[] = [];
