@@ -77,9 +77,22 @@ export function kindOf(tag: string): BlockKind {
 
 // ─── XML entity (de)coding ───────────────────────────────────────────────────
 
-/** Escape the 5 predefined XML entities in element text. */
+/**
+ * Remove characters that are illegal in XML 1.0 even when escaped — the C0
+ * control chars except tab/newline/CR, plus the non-characters U+FFFE/U+FFFF.
+ * Inserted text (e.g. from an AI) can carry a stray form-feed (U+000C) that makes
+ * `document.xml` unparseable ("PCDATA invalid Char value 12") and breaks strict
+ * readers like docx-preview / OnlyOffice. Stripping here keeps the part valid.
+ */
+// eslint-disable-next-line no-control-regex
+const INVALID_XML_CHARS = /[\x00-\x08\x0B\x0C\x0E-\x1F￾￿]/g;
+export function stripInvalidXmlChars(text: string): string {
+  return text.replace(INVALID_XML_CHARS, "");
+}
+
+/** Escape the 5 predefined XML entities in element text (invalid chars stripped first). */
 export function escapeXmlText(text: string): string {
-  return text
+  return stripInvalidXmlChars(text)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
@@ -394,7 +407,7 @@ export function makeTableXml(
       "w:p": {
         "w:r": {
           ...rPr,
-          "w:t": { _: text ?? "", $: { "xml:space": "preserve" } },
+          "w:t": { _: stripInvalidXmlChars(text ?? ""), $: { "xml:space": "preserve" } },
         },
       },
     };

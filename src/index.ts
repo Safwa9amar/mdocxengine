@@ -22,9 +22,6 @@ import { SectionManager } from "./core/PartsManagers/SectionManager";
 import { ShapeManager } from "./core/PartsManagers/ShapeManager";
 import fs from "fs/promises";
 import path from "path";
-import dotenv from "dotenv";
-dotenv.config();
-
 class Mdocxengine {
   zip: ZipManager;
   rels: RelManager;

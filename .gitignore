@@ -8,5 +8,7 @@ samples/outputs
 coverage
 dist
 logs
-.tgz
+*.tgz
 .env
+.DS_Store
+data.txt
