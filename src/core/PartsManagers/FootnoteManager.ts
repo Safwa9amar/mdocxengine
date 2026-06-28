@@ -155,6 +155,63 @@ export class FootnoteManager {
   }
 
   /**
+   * Copy footnote ELEMENTS verbatim from another document's footnotes.xml string,
+   * preserving their rich content (runs, rPr, hyperlinks). Each needed footnote is
+   * appended under a fresh, collision-free id; returns source-id → new-id.
+   *
+   * Byte-faithful string injection (no xml2js round-trip) so footnote content can
+   * never be mis-nested. NOTE: footnote-internal media (r:embed) / numbering are
+   * NOT remapped here — footnotes embedding images are a rare deferred edge.
+   */
+  public async copyFootnotesVerbatim(
+    sourceFootnotesXml: string | null,
+    neededIds: Set<string>,
+  ): Promise<Record<string, string>> {
+    if (!sourceFootnotesXml || neededIds.size === 0) return {};
+
+    // Extract the needed user footnote elements (skip separators) from the source.
+    const elements: { id: string; xml: string }[] = [];
+    const re = /<w:footnote\b[^>]*\bw:id="([^"]+)"[^>]*>[\s\S]*?<\/w:footnote>/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(sourceFootnotesXml)) !== null) {
+      const openTag = m[0].slice(0, m[0].indexOf(">"));
+      if (/\bw:type=/.test(openTag)) continue; // separator / continuationSeparator
+      if (!neededIds.has(m[1])) continue;
+      elements.push({ id: m[1], xml: m[0] });
+    }
+    if (elements.length === 0) return {};
+
+    await this.ensureRegistered();
+    let targetXml = this.zip.readAsText(FOOTNOTES_PATH);
+    if (!targetXml) return {};
+
+    // Next id = max existing footnote id + 1 (separators -1/0 never raise it).
+    let nextId = 1;
+    const idRe = /<w:footnote\b[^>]*\bw:id="(-?\d+)"/g;
+    let im: RegExpExecArray | null;
+    while ((im = idRe.exec(targetXml)) !== null) {
+      const n = parseInt(im[1], 10);
+      if (n >= nextId) nextId = n + 1;
+    }
+
+    const idMap: Record<string, string> = {};
+    const injected: string[] = [];
+    for (const el of elements) {
+      const newId = String(nextId++);
+      const gt = el.xml.indexOf(">");
+      const open = el.xml.slice(0, gt).replace(/\bw:id="[^"]+"/, `w:id="${newId}"`);
+      injected.push(open + el.xml.slice(gt));
+      idMap[el.id] = newId;
+    }
+
+    const close = targetXml.lastIndexOf("</w:footnotes>");
+    if (close === -1) return {};
+    targetXml = targetXml.slice(0, close) + injected.join("") + targetXml.slice(close);
+    this.zip.addFile(FOOTNOTES_PATH, Buffer.from(targetXml, "utf-8"));
+    return idMap;
+  }
+
+  /**
    * Removes a footnote by id from footnotes.xml.
    * You must also manually remove the <w:footnoteReference> run from the document.
    */

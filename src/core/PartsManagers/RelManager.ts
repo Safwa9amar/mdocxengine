@@ -33,7 +33,7 @@ export class RelManager {
    * Adds a relationship entry: Id must be unique (caller responsible).
    * target should be relative to 'word/' (e.g. 'header1.xml' or 'media/image1.png')
    */
-  async addRelationship(id: string, type: string, target: string) {
+  async addRelationship(id: string, type: string, target: string, targetMode?: string) {
     const relsObj = await this.readRels();
 
     if (!relsObj.Relationships) {
@@ -47,7 +47,9 @@ export class RelManager {
     }
 
     relsObj.Relationships.Relationship.push({
-      $: { Id: id, Type: type, Target: target },
+      // TargetMode="External" is required for hyperlinks/external targets, else
+      // Word resolves Target as an internal part path.
+      $: { Id: id, Type: type, Target: target, ...(targetMode ? { TargetMode: targetMode } : {}) },
     });
 
     await this.writeRels(relsObj.Relationships);

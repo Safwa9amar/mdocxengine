@@ -9,6 +9,14 @@ export interface NumberingDefinition {
   numId: string;
 }
 
+/** Raw parsed numbering parts (xml2js objects), for cross-document copy. */
+export interface RawNumbering {
+  abstractNums: any[];
+  nums: any[];
+}
+
+const W_MAIN_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+
 export class NumberingManager {
   private zip: AdmZip;
 
@@ -91,6 +99,50 @@ export class NumberingManager {
       "w:abstractNumId": { $: { "w:val": abstractNumId } },
     });
 
+    await this.writeNumbering(obj);
+  }
+
+  // ── Cross-document copy primitives (used by MergeManager) ──────────────────
+
+  /** Raw `<w:abstractNum>` + `<w:num>` arrays from this document's numbering.xml. */
+  public async getRawDefinitions(): Promise<RawNumbering> {
+    const obj = await this.readNumbering();
+    const a = obj?.["w:numbering"]?.["w:abstractNum"];
+    const n = obj?.["w:numbering"]?.["w:num"];
+    return {
+      abstractNums: Array.isArray(a) ? a : a ? [a] : [],
+      nums: Array.isArray(n) ? n : n ? [n] : [],
+    };
+  }
+
+  /** Highest existing abstractNumId / numId (for collision-free allocation). */
+  public async maxIds(): Promise<{ absMax: number; numMax: number }> {
+    const { abstractNums, nums } = await this.getRawDefinitions();
+    const absMax = abstractNums.reduce(
+      (m, x) => Math.max(m, parseInt(x?.$?.["w:abstractNumId"] ?? "0", 10) || 0),
+      0,
+    );
+    const numMax = nums.reduce((m, x) => Math.max(m, parseInt(x?.$?.["w:numId"] ?? "0", 10) || 0), 0);
+    return { absMax, numMax };
+  }
+
+  /**
+   * Append already-id-rewritten `<w:abstractNum>` + `<w:num>` nodes. Keeps the
+   * schema order (all abstractNum before all num) because they are separate keys.
+   */
+  public async appendRawDefinitions(abstractNums: any[], nums: any[]): Promise<void> {
+    if (abstractNums.length === 0 && nums.length === 0) return;
+    const obj = await this.readNumbering();
+    if (!obj["w:numbering"]) obj["w:numbering"] = {};
+    const root = obj["w:numbering"];
+    if (!root.$) root.$ = { "xmlns:w": W_MAIN_NS };
+    const ensureArr = (k: string) => {
+      root[k] = Array.isArray(root[k]) ? root[k] : root[k] ? [root[k]] : [];
+    };
+    ensureArr("w:abstractNum");
+    ensureArr("w:num");
+    root["w:abstractNum"].push(...abstractNums);
+    root["w:num"].push(...nums);
     await this.writeNumbering(obj);
   }
 }

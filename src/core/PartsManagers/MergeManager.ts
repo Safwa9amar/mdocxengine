@@ -25,6 +25,8 @@ import AdmZip from "adm-zip";
 import DocumentManager from "./DocumentManager";
 import { MediaManager } from "./MediaManager";
 import { FootnoteManager } from "./FootnoteManager";
+import { NumberingManager } from "./NumberingManager";
+import { RelManager } from "./RelManager";
 import { parseXml } from "@/utils/xmlUtils";
 import type { BodyBlock } from "@/core/files/body/OrderedBody";
 // Imported lazily inside appendDocument() to avoid an index.ts ↔ MergeManager cycle.
@@ -71,12 +73,16 @@ export class MergeManager {
   private document: DocumentManager;
   private media: MediaManager;
   private footnotes: FootnoteManager;
+  private numbering: NumberingManager;
+  private rels: RelManager;
 
   constructor(zip: AdmZip) {
     this.zip = zip;
     this.document = new DocumentManager(zip);
     this.media = new MediaManager(zip);
     this.footnotes = new FootnoteManager(zip);
+    this.numbering = new NumberingManager(zip);
+    this.rels = new RelManager(zip);
   }
 
   /**
@@ -112,13 +118,18 @@ export class MergeManager {
     styleMap: Record<string, string>,
   ): Promise<BodyBlock[]> {
     const scan = blocks.map((b) => b.xml).join("\n");
-    const mediaMap = await this.buildMediaMap(source, scan);
+    const srcRels = await this.readSourceRels(source);
+    const mediaMap = await this.buildMediaMap(source, srcRels, scan);
+    const hyperlinkMap = await this.buildHyperlinkMap(srcRels, scan);
     const footnoteMap = await this.buildFootnoteMap(source, scan);
+    const numberingMap = await this.buildNumberingMap(source, scan);
 
     return blocks.map((b) => {
       let xml = b.xml;
       xml = this.applyAttrMap(xml, ["r:embed", "r:link"], mediaMap);
+      xml = this.applyHyperlinkMap(xml, hyperlinkMap);
       xml = this.applyFootnoteRefMap(xml, footnoteMap);
+      xml = this.applyNumIdMap(xml, numberingMap);
       xml = this.applyStyleMap(xml, styleMap);
       return { kind: b.kind, tag: b.tag, xml };
     });
@@ -126,16 +137,24 @@ export class MergeManager {
 
   // ─── Media ─────────────────────────────────────────────────────────────────
 
-  /** Read the source document's relationships as { rId: Target }. */
-  private async readSourceRels(source: MdocxengineType): Promise<Record<string, string>> {
+  /** Read the source document's relationships as { rId: { type, target, targetMode } }. */
+  private async readSourceRels(
+    source: MdocxengineType,
+  ): Promise<Record<string, { type: string; target: string; targetMode?: string }>> {
     const xml = source.zip.readAsText(SRC_RELS_PATH);
     if (!xml) return {};
     const obj: any = await parseXml(xml);
     const raw = obj?.Relationships?.Relationship;
     const arr = Array.isArray(raw) ? raw : raw ? [raw] : [];
-    const map: Record<string, string> = {};
+    const map: Record<string, { type: string; target: string; targetMode?: string }> = {};
     for (const r of arr) {
-      if (r?.$?.Id && r?.$?.Target != null) map[r.$.Id] = String(r.$.Target);
+      if (r?.$?.Id && r?.$?.Target != null) {
+        map[r.$.Id] = {
+          type: String(r.$.Type ?? ""),
+          target: String(r.$.Target),
+          targetMode: r.$.TargetMode ? String(r.$.TargetMode) : undefined,
+        };
+      }
     }
     return map;
   }
@@ -143,6 +162,7 @@ export class MergeManager {
   /** Copy each image referenced by the blocks; return source-rId → new-rId. */
   private async buildMediaMap(
     source: MdocxengineType,
+    srcRels: Record<string, { type: string; target: string; targetMode?: string }>,
     blocksXml: string,
   ): Promise<Record<string, string>> {
     const refRIds = new Set(
@@ -150,10 +170,9 @@ export class MergeManager {
     );
     if (refRIds.size === 0) return {};
 
-    const srcRels = await this.readSourceRels(source);
     const map: Record<string, string> = {};
     for (const rId of refRIds) {
-      const target = srcRels[rId];
+      const target = srcRels[rId]?.target;
       if (!target) continue; // not a media rel (or dangling)
       const name = target.replace(/^.*\//, ""); // "media/image1.png" → "image1.png"
       const buf = source.media.extractImage(name);
@@ -165,9 +184,33 @@ export class MergeManager {
     return map;
   }
 
-  // ─── Footnotes (Phase 1: text fidelity) ──────────────────────────────────────
+  /**
+   * Copy external hyperlink relationships referenced by `<w:hyperlink r:id>` into
+   * the target (preserving TargetMode="External"); return source-rId → new-rId.
+   */
+  private async buildHyperlinkMap(
+    srcRels: Record<string, { type: string; target: string; targetMode?: string }>,
+    blocksXml: string,
+  ): Promise<Record<string, string>> {
+    const refRIds = new Set(
+      [...blocksXml.matchAll(/<w:hyperlink\b[^>]*\br:id="([^"]+)"/g)].map((m) => m[1]),
+    );
+    if (refRIds.size === 0) return {};
 
-  /** Copy each referenced source footnote; return source-id → new-id (as strings). */
+    const map: Record<string, string> = {};
+    for (const rId of refRIds) {
+      const rel = srcRels[rId];
+      if (!rel || !rel.type.endsWith("/hyperlink")) continue;
+      const newId = await this.rels.genId();
+      await this.rels.addRelationship(newId, rel.type, rel.target, rel.targetMode ?? "External");
+      map[rId] = newId;
+    }
+    return map;
+  }
+
+  // ─── Footnotes (verbatim element copy, rich-content fidelity) ────────────────
+
+  /** Copy each referenced source footnote verbatim; return source-id → new-id. */
   private async buildFootnoteMap(
     source: MdocxengineType,
     blocksXml: string,
@@ -176,17 +219,78 @@ export class MergeManager {
       [...blocksXml.matchAll(/<w:footnoteReference\b[^>]*\bw:id="([^"]+)"/g)].map((m) => m[1]),
     );
     if (refIds.size === 0) return {};
+    const sourceFootnotesXml = source.zip.readAsText("word/footnotes.xml");
+    return this.footnotes.copyFootnotesVerbatim(sourceFootnotesXml, refIds);
+  }
 
-    const srcFns = await source.footnotes.getFootnotes(); // [{ id, text }]
-    const byId = new Map(srcFns.map((f) => [String(f.id), f.text]));
-    const map: Record<string, string> = {};
-    for (const oldId of refIds) {
-      const text = byId.get(oldId);
-      if (text == null) continue; // separator / unknown → leave as-is
-      const { id } = await this.footnotes.addFootnote(text);
-      map[oldId] = String(id);
+  // ─── Numbering (Phase 2) ─────────────────────────────────────────────────────
+
+  /**
+   * Copy the source's numbering definitions referenced by the blocks (abstractNum
+   * + num) into the target with fresh, collision-free ids; return source-numId →
+   * new-numId. Without this, two parts that both use `numId="1"` would share one
+   * list and renumber wrongly.
+   */
+  private async buildNumberingMap(
+    source: MdocxengineType,
+    blocksXml: string,
+  ): Promise<Record<string, string>> {
+    const usedNumIds = new Set(
+      [...blocksXml.matchAll(/<w:numId\b[^>]*\bw:val="([^"]+)"/g)].map((m) => m[1]),
+    );
+    if (usedNumIds.size === 0) return {};
+
+    const srcDefs = await source.numbering.getRawDefinitions();
+    if (srcDefs.nums.length === 0) return {};
+
+    const { absMax, numMax } = await this.numbering.maxIds();
+    let nextAbs = absMax + 1;
+    let nextNum = numMax + 1;
+
+    const numIdMap: Record<string, string> = {};
+    const absIdMap: Record<string, string> = {};
+    const addAbs: any[] = [];
+    const addNum: any[] = [];
+
+    for (const num of srcDefs.nums) {
+      const oldNumId = num?.$?.["w:numId"];
+      if (oldNumId == null || !usedNumIds.has(String(oldNumId))) continue;
+
+      const oldAbs = num?.["w:abstractNumId"]?.$?.["w:val"];
+      // Copy the referenced abstractNum once, with a fresh id.
+      if (oldAbs != null && absIdMap[oldAbs] == null) {
+        const absDef = srcDefs.abstractNums.find((a) => a?.$?.["w:abstractNumId"] === oldAbs);
+        if (absDef) {
+          const newAbs = String(nextAbs++);
+          const clone = JSON.parse(JSON.stringify(absDef));
+          clone.$ = { ...clone.$, "w:abstractNumId": newAbs };
+          // Drop nsid so Word doesn't fold this into the source list's identity.
+          if (clone["w:nsid"]) delete clone["w:nsid"];
+          addAbs.push(clone);
+          absIdMap[oldAbs] = newAbs;
+        }
+      }
+
+      const newNumId = String(nextNum++);
+      const numClone = JSON.parse(JSON.stringify(num));
+      numClone.$ = { ...numClone.$, "w:numId": newNumId };
+      if (numClone["w:abstractNumId"]?.$ && oldAbs != null && absIdMap[oldAbs] != null) {
+        numClone["w:abstractNumId"].$ = { ...numClone["w:abstractNumId"].$, "w:val": absIdMap[oldAbs] };
+      }
+      addNum.push(numClone);
+      numIdMap[String(oldNumId)] = newNumId;
     }
-    return map;
+
+    await this.numbering.appendRawDefinitions(addAbs, addNum);
+    return numIdMap;
+  }
+
+  /** Remap w:val inside <w:numId .../> elements only. */
+  private applyNumIdMap(xml: string, idMap: Record<string, string>): string {
+    if (Object.keys(idMap).length === 0) return xml;
+    return xml.replace(/<w:numId\b[^>]*\/?>/g, (tag) =>
+      tag.replace(/\bw:val="([^"]+)"/, (full, val) => (idMap[val] ? `w:val="${idMap[val]}"` : full)),
+    );
   }
 
   // ─── Attribute rewriters (scoped to the passed block xml) ───────────────────
@@ -204,6 +308,14 @@ export class MergeManager {
       out = out.replace(re, (full, p1, val, p3) => (idMap[val] ? `${p1}${idMap[val]}${p3}` : full));
     }
     return out;
+  }
+
+  /** Remap r:id ONLY inside <w:hyperlink ...> open tags (never other r:id). */
+  private applyHyperlinkMap(xml: string, idMap: Record<string, string>): string {
+    if (Object.keys(idMap).length === 0) return xml;
+    return xml.replace(/<w:hyperlink\b[^>]*>/g, (tag) =>
+      tag.replace(/\br:id="([^"]+)"/, (full, val) => (idMap[val] ? `r:id="${idMap[val]}"` : full)),
+    );
   }
 
   /** Remap w:id ONLY inside <w:footnoteReference .../> (never other w:id). */

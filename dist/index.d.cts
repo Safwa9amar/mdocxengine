@@ -648,6 +648,16 @@ export declare class FootnoteManager {
         run: Run_2;
     }>;
     /**
+     * Copy footnote ELEMENTS verbatim from another document's footnotes.xml string,
+     * preserving their rich content (runs, rPr, hyperlinks). Each needed footnote is
+     * appended under a fresh, collision-free id; returns source-id → new-id.
+     *
+     * Byte-faithful string injection (no xml2js round-trip) so footnote content can
+     * never be mis-nested. NOTE: footnote-internal media (r:embed) / numbering are
+     * NOT remapped here — footnotes embedding images are a rare deferred edge.
+     */
+    copyFootnotesVerbatim(sourceFootnotesXml: string | null, neededIds: Set<string>): Promise<Record<string, string>>;
+    /**
      * Removes a footnote by id from footnotes.xml.
      * You must also manually remove the <w:footnoteReference> run from the document.
      */
@@ -933,6 +943,8 @@ export declare class MergeManager {
     private document;
     private media;
     private footnotes;
+    private numbering;
+    private rels;
     constructor(zip: default_2);
     /**
      * Copy `sourceBuffer`'s body into this document, fully remapped, appended after
@@ -944,14 +956,30 @@ export declare class MergeManager {
      * them to EACH block's xml independently (kind/tag preserved verbatim).
      */
     private remapBlocks;
-    /** Read the source document's relationships as { rId: Target }. */
+    /** Read the source document's relationships as { rId: { type, target, targetMode } }. */
     private readSourceRels;
     /** Copy each image referenced by the blocks; return source-rId → new-rId. */
     private buildMediaMap;
-    /** Copy each referenced source footnote; return source-id → new-id (as strings). */
+    /**
+     * Copy external hyperlink relationships referenced by `<w:hyperlink r:id>` into
+     * the target (preserving TargetMode="External"); return source-rId → new-rId.
+     */
+    private buildHyperlinkMap;
+    /** Copy each referenced source footnote verbatim; return source-id → new-id. */
     private buildFootnoteMap;
+    /**
+     * Copy the source's numbering definitions referenced by the blocks (abstractNum
+     * + num) into the target with fresh, collision-free ids; return source-numId →
+     * new-numId. Without this, two parts that both use `numId="1"` would share one
+     * list and renumber wrongly.
+     */
+    private buildNumberingMap;
+    /** Remap w:val inside <w:numId .../> elements only. */
+    private applyNumIdMap;
     /** Replace attr="old" → attr="new" for each given attribute name. */
     private applyAttrMap;
+    /** Remap r:id ONLY inside <w:hyperlink ...> open tags (never other r:id). */
+    private applyHyperlinkMap;
     /** Remap w:id ONLY inside <w:footnoteReference .../> (never other w:id). */
     private applyFootnoteRefMap;
     /** Retarget <w:pStyle w:val="X"/> by name. */
@@ -1020,6 +1048,18 @@ export declare class NumberingManager {
      * @param abstractNumId The abstractNumId to reference.
      */
     addNumberingDefinition(numId: string, abstractNumId: string): Promise<void>;
+    /** Raw `<w:abstractNum>` + `<w:num>` arrays from this document's numbering.xml. */
+    getRawDefinitions(): Promise<RawNumbering>;
+    /** Highest existing abstractNumId / numId (for collision-free allocation). */
+    maxIds(): Promise<{
+        absMax: number;
+        numMax: number;
+    }>;
+    /**
+     * Append already-id-rewritten `<w:abstractNum>` + `<w:num>` nodes. Keeps the
+     * schema order (all abstractNum before all num) because they are separate keys.
+     */
+    appendRawDefinitions(abstractNums: any[], nums: any[]): Promise<void>;
 }
 
 export declare type Orientation = "portrait" | "landscape";
@@ -1452,6 +1492,12 @@ export declare function parseOrderedDoc(documentXml: string): {
     bodyChildren: BodyBlock[];
 };
 
+/** Raw parsed numbering parts (xml2js objects), for cross-document copy. */
+declare interface RawNumbering {
+    abstractNums: any[];
+    nums: any[];
+}
+
 export declare class RelManager {
     zip: default_2;
     relsPath: RelsType;
@@ -1463,7 +1509,7 @@ export declare class RelManager {
      * Adds a relationship entry: Id must be unique (caller responsible).
      * target should be relative to 'word/' (e.g. 'header1.xml' or 'media/image1.png')
      */
-    addRelationship(id: string, type: string, target: string): Promise<void>;
+    addRelationship(id: string, type: string, target: string, targetMode?: string): Promise<void>;
     /**
      * Quick helper to generate a new rId (checks existing ones)
      */
