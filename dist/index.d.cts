@@ -1,5 +1,14 @@
 import { default as default_2 } from 'adm-zip';
 
+export declare interface AppendOptions {
+    /** Prepend a page break before everything this call appends. */
+    startOnNewPage?: boolean;
+    /** Blocks inserted BEFORE the copied source body (e.g. a part-title heading). */
+    leadingBlocks?: BodyBlock[];
+    /** source styleId → target styleId (applied to `<w:pStyle w:val>`). */
+    styleMap?: Record<string, string>;
+}
+
 export declare interface AppProperties {
     application?: string;
     pages?: number;
@@ -361,6 +370,13 @@ export declare class CrossReferenceManager {
      */
     createCrossRefRuns(bookmarkName: string, displayText?: string): Run_2[];
 }
+
+/**
+ * Common French/English Word heading + body style aliases → canonical target
+ * styleIds. The combine flow passes this so mismatched source heading styles map
+ * onto the template's styles by name.
+ */
+export declare const DEFAULT_STYLE_ALIASES: Record<string, string>;
 
 export declare class DocumentManager {
     zip: default_2;
@@ -870,6 +886,7 @@ export declare class Mdocxengine {
     trackedChanges: TrackedChangesManager;
     sections: SectionManager;
     shapes: ShapeManager;
+    merge: MergeManager;
     private constructor();
     static loadFromFile(path: string): Promise<Mdocxengine>;
     static loadFromBuffer(buffer: Buffer): Promise<Mdocxengine>;
@@ -909,6 +926,36 @@ export declare class MediaManager {
      * Deletes an image from the zip (does not remove the relationship or inline reference).
      */
     deleteImage(name: string): void;
+}
+
+export declare class MergeManager {
+    private zip;
+    private document;
+    private media;
+    private footnotes;
+    constructor(zip: default_2);
+    /**
+     * Copy `sourceBuffer`'s body into this document, fully remapped, appended after
+     * the existing body (before the trailing sectPr, handled by saveBlocks).
+     */
+    appendDocument(sourceBuffer: Buffer, opts?: AppendOptions): Promise<void>;
+    /**
+     * Build the id maps from a READ-ONLY concatenation of source blocks, then apply
+     * them to EACH block's xml independently (kind/tag preserved verbatim).
+     */
+    private remapBlocks;
+    /** Read the source document's relationships as { rId: Target }. */
+    private readSourceRels;
+    /** Copy each image referenced by the blocks; return source-rId → new-rId. */
+    private buildMediaMap;
+    /** Copy each referenced source footnote; return source-id → new-id (as strings). */
+    private buildFootnoteMap;
+    /** Replace attr="old" → attr="new" for each given attribute name. */
+    private applyAttrMap;
+    /** Remap w:id ONLY inside <w:footnoteReference .../> (never other w:id). */
+    private applyFootnoteRefMap;
+    /** Retarget <w:pStyle w:val="X"/> by name. */
+    private applyStyleMap;
 }
 
 export declare class MetadataManager {

@@ -20,6 +20,7 @@ import { CommentsManager } from "./core/PartsManagers/CommentsManager";
 import { TrackedChangesManager } from "./core/PartsManagers/TrackedChangesManager";
 import { SectionManager } from "./core/PartsManagers/SectionManager";
 import { ShapeManager } from "./core/PartsManagers/ShapeManager";
+import { MergeManager } from "./core/PartsManagers/MergeManager";
 import fs from "fs/promises";
 import path from "path";
 class Mdocxengine {
@@ -45,6 +46,7 @@ class Mdocxengine {
   trackedChanges: TrackedChangesManager;
   sections: SectionManager;
   shapes: ShapeManager;
+  merge: MergeManager;
 
   private constructor(zip: ZipManager) {
     this.zip = zip;
@@ -69,6 +71,7 @@ class Mdocxengine {
     this.trackedChanges = new TrackedChangesManager(zip);
     this.sections       = new SectionManager(zip);
     this.shapes         = new ShapeManager(zip);
+    this.merge          = new MergeManager(zip);
   }
 
   static async loadFromFile(path: string) {
@@ -114,7 +117,10 @@ export {
   TrackedChangesManager,
   SectionManager,
   ShapeManager,
+  MergeManager,
 };
+export { DEFAULT_STYLE_ALIASES } from "./core/PartsManagers/MergeManager";
+export type { AppendOptions } from "./core/PartsManagers/MergeManager";
 export { default as Paragraph } from "./core/files/paragraph/index";
 export { Run } from "./core/files/paragraph/Run";
 export { Table } from "./core/files/table/index";
