@@ -412,6 +412,30 @@ export default class DocumentManager {
     await this.saveBlocks(blocks);
   }
 
+  /**
+   * Set paragraph text direction at block `index` via <w:bidi>, preserving order
+   * + runs. "rtl" → <w:bidi/> (right-to-left); "ltr" → <w:bidi w:val="0"/> (an
+   * explicit left-to-right marker, so it overrides an RTL style default).
+   */
+  public async setBlockDirection(index: number, direction: "rtl" | "ltr"): Promise<void> {
+    const blocks = await this.getBlocks();
+    const b = blocks[index];
+    if (!b || b.kind !== "paragraph" || b.xml.includes("<w:drawing>")) {
+      throw new Error(`setBlockDirection: no text paragraph at block index ${index}`);
+    }
+    const p = await Paragraph.createFromXml(b.xml);
+    // ensurePPr() is private but guarantees <w:pPr> exists and is first — the same
+    // hook applyStyle()/setAlignment() rely on.
+    (p as unknown as { ensurePPr(): void }).ensurePPr();
+    (p as any).paragraph["w:pPr"]["w:bidi"] =
+      direction === "rtl" ? {} : { $: { "w:val": "0" } };
+    blocks[index] = {
+      ...b,
+      xml: XmlUtils.buildXml((p as any).paragraph, { rootName: "w:p", headless: true, pretty: false }),
+    };
+    await this.saveBlocks(blocks);
+  }
+
   /** Strip run-level formatting (bold/italic/font) at block `index`; keeps text. */
   public async clearBlockFormatting(index: number): Promise<void> {
     const blocks = await this.getBlocks();

@@ -108,4 +108,25 @@ describe("DocumentManager — block-indexed paragraph edits (order + run preserv
       await expect(dm.clearBlockFormatting(1)).rejects.toThrow(/no text paragraph/);
     });
   });
+
+  describe("setBlockDirection", () => {
+    test("rtl adds <w:bidi/>, order preserved, runs kept", async () => {
+      await dm.setBlockDirection(2, "rtl");
+      const blocks = await dm.getBlocks();
+      expect(blocks.map((b) => b.kind)).toEqual(ORDER);
+      expect(blocks[2].xml).toContain("<w:bidi");
+      expect(blocks[2].xml).not.toContain('<w:bidi w:val="0"');
+      expect(blocks[2].xml).toContain("<w:b"); // bold runs preserved
+    });
+
+    test("ltr writes an explicit <w:bidi w:val=\"0\"/>", async () => {
+      await dm.setBlockDirection(2, "ltr");
+      const blocks = await dm.getBlocks();
+      expect(blocks[2].xml).toContain('<w:bidi w:val="0"');
+    });
+
+    test("rejects a non-paragraph (table) block", async () => {
+      await expect(dm.setBlockDirection(1, "rtl")).rejects.toThrow(/no text paragraph/);
+    });
+  });
 });
