@@ -452,6 +452,23 @@ export default class DocumentManager {
     await this.saveBlocks(blocks);
   }
 
+  /**
+   * Move the block at `from` to position `to`, preserving every block's bytes.
+   * Pure array reorder over the ordered block model — the moved block and all
+   * others keep their exact XML; only their sequence changes.
+   */
+  public async moveBlock(from: number, to: number): Promise<void> {
+    const blocks = await this.getBlocks();
+    const last = blocks.length - 1;
+    if (from < 0 || from > last || to < 0 || to > last) {
+      throw new Error(`moveBlock: index out of range (from=${from}, to=${to}, len=${blocks.length})`);
+    }
+    if (from === to) return;
+    const [moved] = blocks.splice(from, 1);
+    blocks.splice(to, 0, moved);
+    await this.saveBlocks(blocks);
+  }
+
   // ─── Private helpers ──────────────────────────────────────────────────────
 
   private _writeBody(split: {

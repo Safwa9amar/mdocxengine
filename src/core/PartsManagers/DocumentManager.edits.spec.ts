@@ -129,4 +129,25 @@ describe("DocumentManager — block-indexed paragraph edits (order + run preserv
       await expect(dm.setBlockDirection(1, "rtl")).rejects.toThrow(/no text paragraph/);
     });
   });
+
+  describe("moveBlock", () => {
+    test("moves a block to a new position, others shift, bytes preserved", async () => {
+      // start: [p:Intro, tbl, p:Middle, tbl, p:image]
+      await dm.moveBlock(0, 2);
+      const blocks = await dm.getBlocks();
+      expect(blocks.map((b) => b.kind)).toEqual(["table", "paragraph", "paragraph", "table", "paragraph"]);
+      expect(paragraphText(blocks[2].xml)).toBe("Intro"); // Intro landed at index 2
+      expect(paragraphText(blocks[1].xml)).toBe("Middle"); // Middle shifted up
+    });
+
+    test("from === to is a no-op", async () => {
+      await dm.moveBlock(2, 2);
+      const blocks = await dm.getBlocks();
+      expect(blocks.map((b) => b.kind)).toEqual(ORDER);
+    });
+
+    test("rejects an out-of-range index", async () => {
+      await expect(dm.moveBlock(0, 99)).rejects.toThrow(/out of range/);
+    });
+  });
 });
