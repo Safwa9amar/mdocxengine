@@ -5,8 +5,10 @@ import {
   splitDocument,
   assembleDocument,
   setParagraphText,
+  paragraphText,
   type BodyBlock,
 } from "@/core/files/body/OrderedBody";
+import { editBodySectPr, upsertSectPrReference } from "@/core/files/body/sectPr";
 import AdmZip from "adm-zip";
 
 const DOC_PATH = "word/document.xml";
@@ -41,23 +43,11 @@ export default class DocumentManager {
   ) {
     const xml = this.zip.readAsText(DOC_PATH);
     if (!xml) return;
-
-    const docObj = await XmlUtils.parseXml(xml);
-    const body = this._getBody(docObj);
-    if (!body) return;
-
-    if (!body["w:sectPr"]) body["w:sectPr"] = {};
-    const sectPr = body["w:sectPr"];
-
-    if (!sectPr[refTag]) {
-      sectPr[refTag] = [];
-    } else if (!Array.isArray(sectPr[refTag])) {
-      sectPr[refTag] = [sectPr[refTag]];
-    }
-
-    sectPr[refTag].push({ $: { "r:id": relId, "w:type": type } });
-
-    await this._writeDoc(docObj);
+    // Byte-safe: edit only the body's <w:sectPr>, never rebuild the whole body
+    // (which would reorder tables). Replaces any existing ref of the same type.
+    const kind = refTag === "w:headerReference" ? "header" : "footer";
+    const next = editBodySectPr(xml, (s) => upsertSectPrReference(s, kind, type, relId));
+    this.zip.addFile(DOC_PATH, Buffer.from(next, "utf-8"));
   }
 
   // ─── Paragraph read API ───────────────────────────────────────────────────
@@ -250,6 +240,25 @@ export default class DocumentManager {
   }
 
   /**
+   * Plain text of the whole document body: every block's visible text, joined by
+   * the given separator (default newline). Blank/whitespace-only blocks are
+   * dropped. Useful for word counts, search indexing, or AI classification.
+   */
+  public async getPlainText(separator = "\n"): Promise<string> {
+    const blocks = await this.getBlocks();
+    return blocks
+      .map((b) => paragraphText(b.xml))
+      .filter((t) => t && t.trim())
+      .join(separator);
+  }
+
+  /** Total word count of the document body (whitespace-delimited). */
+  public async getWordCount(): Promise<number> {
+    const text = await this.getPlainText(" ");
+    return text.split(/\s+/).filter(Boolean).length;
+  }
+
+  /**
    * Replaces the body's editable children with `blocks` (in order), preserving
    * the existing trailing w:sectPr exactly, and writes document.xml. Callers
    * pass only the editable blocks; the sectPr is re-appended automatically.
@@ -342,6 +351,81 @@ export default class DocumentManager {
     }
     split.blocks.splice(pos, 1);
     this._writeBody(split);
+  }
+
+  // ─── Block-indexed paragraph formatting (order + run preserving) ──────────
+  //
+  // These mirror Doc.editTableCell's round-trip for paragraphs: getBlocks →
+  // Paragraph.createFromXml → mutate → buildXml(node, {rootName:"w:p",...}) →
+  // saveBlocks. Only the target block's XML is rewritten; every sibling block
+  // keeps its exact original bytes and the sectPr stays last.
+
+  /**
+   * Set the paragraph style at block `index`, preserving order + runs.
+   * "Normal" demotes to body (drops w:pStyle + w:outlineLvl). "Heading{n}"
+   * sets the style AND w:outlineLvl = n-1 so the outline/TOC detects it.
+   */
+  public async setBlockStyle(index: number, styleId: string): Promise<void> {
+    const blocks = await this.getBlocks();
+    const b = blocks[index];
+    if (!b || b.kind !== "paragraph" || b.xml.includes("<w:drawing>")) {
+      throw new Error(`setBlockStyle: no text paragraph at block index ${index}`);
+    }
+    const p = await Paragraph.createFromXml(b.xml);
+    if (styleId === "Normal") {
+      p.applyStyle("Normal");
+      // applyStyle() runs ensurePPr(), which REBUILDS this.paragraph when the
+      // paragraph had no <w:pPr>. Read the node AFTER, or a pre-captured
+      // reference would point at the discarded object (and lack w:pPr).
+      const node = (p as any).paragraph;
+      delete node["w:pPr"]["w:pStyle"];
+      delete node["w:pPr"]["w:outlineLvl"];
+    } else {
+      p.applyStyle(styleId);
+      const node = (p as any).paragraph;
+      const m = /^Heading([1-6])$/.exec(styleId);
+      if (m) node["w:pPr"]["w:outlineLvl"] = { $: { "w:val": String(Number(m[1]) - 1) } };
+    }
+    blocks[index] = {
+      ...b,
+      xml: XmlUtils.buildXml((p as any).paragraph, { rootName: "w:p", headless: true, pretty: false }),
+    };
+    await this.saveBlocks(blocks);
+  }
+
+  /** Set paragraph alignment at block `index`, preserving order + runs. */
+  public async setBlockAlignment(
+    index: number,
+    alignment: "left" | "center" | "right" | "both",
+  ): Promise<void> {
+    const blocks = await this.getBlocks();
+    const b = blocks[index];
+    if (!b || b.kind !== "paragraph" || b.xml.includes("<w:drawing>")) {
+      throw new Error(`setBlockAlignment: no text paragraph at block index ${index}`);
+    }
+    const p = await Paragraph.createFromXml(b.xml);
+    p.setAlignment(alignment);
+    blocks[index] = {
+      ...b,
+      xml: XmlUtils.buildXml((p as any).paragraph, { rootName: "w:p", headless: true, pretty: false }),
+    };
+    await this.saveBlocks(blocks);
+  }
+
+  /** Strip run-level formatting (bold/italic/font) at block `index`; keeps text. */
+  public async clearBlockFormatting(index: number): Promise<void> {
+    const blocks = await this.getBlocks();
+    const b = blocks[index];
+    if (!b || b.kind !== "paragraph" || b.xml.includes("<w:drawing>")) {
+      throw new Error(`clearBlockFormatting: no text paragraph at block index ${index}`);
+    }
+    const p = await Paragraph.createFromXml(b.xml);
+    p.removeFormatting();
+    blocks[index] = {
+      ...b,
+      xml: XmlUtils.buildXml((p as any).paragraph, { rootName: "w:p", headless: true, pretty: false }),
+    };
+    await this.saveBlocks(blocks);
   }
 
   // ─── Private helpers ──────────────────────────────────────────────────────
