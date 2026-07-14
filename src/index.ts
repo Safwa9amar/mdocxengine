@@ -21,8 +21,27 @@ import { TrackedChangesManager } from "./core/PartsManagers/TrackedChangesManage
 import { SectionManager } from "./core/PartsManagers/SectionManager";
 import { ShapeManager } from "./core/PartsManagers/ShapeManager";
 import { MergeManager } from "./core/PartsManagers/MergeManager";
+import { FormattingManager } from "./core/PartsManagers/FormattingManager";
+import type { PageNumberFormat } from "./core/PartsManagers/FooterManager";
 import fs from "fs/promises";
 import path from "path";
+
+/** Options for {@link Mdocxengine.applyFrontMatterNumbering}. */
+export interface FrontMatterNumberingOptions {
+  /**
+   * Paragraph index where the body begins. A `nextPage` section break is
+   * inserted here, splitting the document into front-matter and body sections.
+   */
+  bodyStartParaIndex: number;
+  /** Front-matter page-number format (default "lowerRoman" → i, ii, iii…). */
+  frontMatterFormat?: PageNumberFormat;
+  /** Body page-number format (default "decimal" → 1, 2, 3…). */
+  bodyFormat?: PageNumberFormat;
+  /** Footer alignment for both sections (default "center"). */
+  alignment?: "left" | "center" | "right";
+  /** Page number the body restarts at (default 1). */
+  bodyStartAt?: number;
+}
 class Mdocxengine {
   zip: ZipManager;
   rels: RelManager;
@@ -47,6 +66,7 @@ class Mdocxengine {
   sections: SectionManager;
   shapes: ShapeManager;
   merge: MergeManager;
+  formatting: FormattingManager;
 
   private constructor(zip: ZipManager) {
     this.zip = zip;
@@ -72,6 +92,7 @@ class Mdocxengine {
     this.sections       = new SectionManager(zip);
     this.shapes         = new ShapeManager(zip);
     this.merge          = new MergeManager(zip);
+    this.formatting     = new FormattingManager(zip);
   }
 
   static async loadFromFile(path: string) {
@@ -90,6 +111,45 @@ class Mdocxengine {
     const buf: Buffer = this.zip.toBuffer();
     await fs.mkdir(path.dirname(outputPath), { recursive: true });
     await fs.writeFile(outputPath, buf);
+  }
+
+  /**
+   * Apply the canonical thesis/report footer scheme: front-matter pages numbered
+   * in one format (default lowercase roman — i, ii, iii…) and the body restarted
+   * in another (default decimal — 1, 2, 3…), each centered in the footer.
+   *
+   * Splits the document into two sections with a `nextPage` break at
+   * `bodyStartParaIndex`, attaches a distinct footer (with a page-number field)
+   * to each section, and restarts the body numbering. A composition over the
+   * PageLayout / Footer / Section managers — no new OOXML logic.
+   */
+  async applyFrontMatterNumbering(options: FrontMatterNumberingOptions): Promise<void> {
+    const {
+      bodyStartParaIndex,
+      frontMatterFormat = "lowerRoman",
+      bodyFormat = "decimal",
+      alignment = "center",
+      bodyStartAt = 1,
+    } = options;
+
+    // 1. Section break before the body → two sections (front matter | body).
+    await this.pageLayout.insertBreak("nextPage", bodyStartParaIndex);
+
+    // 2. Front-matter footer (roman by default), 3. body footer (decimal).
+    const front = await this.footer.addFooter("", "default", undefined, { registerInSectPr: false });
+    await this.footer.insertPageNumber(front.footerPath, { alignment, format: frontMatterFormat });
+    const body = await this.footer.addFooter("", "default", undefined, { registerInSectPr: false });
+    await this.footer.insertPageNumber(body.footerPath, { alignment, format: bodyFormat });
+
+    // 4. Attach a footer per section.
+    const sections = await this.sections.getSections();
+    if (sections.length >= 2) {
+      await this.sections.setSectionFooter(0, front.relId, "default");
+      await this.sections.setSectionFooter(1, body.relId, "default");
+    }
+
+    // 5. Restart body numbering (formatPageNumbers targets the body/final section).
+    await this.footer.formatPageNumbers({ format: bodyFormat, startAt: bodyStartAt });
   }
 }
 
@@ -118,7 +178,30 @@ export {
   SectionManager,
   ShapeManager,
   MergeManager,
+  FormattingManager,
 };
+export type {
+  DocumentFormatting,
+  DocumentMargins,
+  FormattingResult,
+} from "./core/PartsManagers/FormattingManager";
+export type { ParagraphOptions } from "./core/files/paragraph/index";
+export type { FromGridOptions, TableBorderOptions, BorderSide } from "./core/files/table/index";
+export {
+  renderMarkdownBlocks,
+  stripInlineMarkdown,
+} from "./core/markdown/index";
+export type {
+  MarkdownBlock,
+  MarkdownAlign,
+  MarkdownRenderCtx,
+  RenderedMarkdown,
+  RenderedTable,
+  RenderedImage,
+  RenderedChunk,
+  BlockRenderer,
+} from "./core/markdown/index";
+export type { PageNumberFormat } from "./core/PartsManagers/FooterManager";
 export { DEFAULT_STYLE_ALIASES } from "./core/PartsManagers/MergeManager";
 export type { AppendOptions } from "./core/PartsManagers/MergeManager";
 export { default as Paragraph } from "./core/files/paragraph/index";
@@ -137,14 +220,40 @@ export {
   nextDrawingId,
   paragraphText,
   paragraphStyleId,
+  headingLevelFromStyleId,
+  paragraphOutlineLevel,
+  paragraphHeadingLevel,
+  paragraphAlignment,
+  paragraphFontSizePt,
+  paragraphIsBold,
+  makeStyledParagraphXml,
+  makeStyledParagraphNode,
   setParagraphText,
   nodeTag,
 } from "./core/files/body/OrderedBody";
+export type { StyledParagraphOptions } from "./core/files/body/OrderedBody";
+export { Doc } from "./Doc";
+export type {
+  DocMap,
+  OutlineNode,
+  BlockInfo,
+  TableInfo,
+  ImageInfo,
+  ParagraphFormat,
+  DetailedBlockInfo,
+  HeadingPattern,
+  InferOutlineOptions,
+  InferredHeading,
+  FooterOptions,
+  SectionEditResult,
+} from "./Doc";
 export type { BodyBlock, BlockKind } from "./core/files/body/OrderedBody";
 export type { StyleEntry } from "./core/PartsManagers/StylesManager";
 export type { NumberingDefinition } from "./core/PartsManagers/NumberingManager";
 export type { CoreProperties, AppProperties } from "./core/PartsManagers/MetadataManager";
-export type { ImageEntry } from "./core/PartsManagers/MediaManager";
+export { EMU_PER_PIXEL, emuToPixels, pixelsToEmu } from "./core/PartsManagers/MediaManager";
+export type { ImageEntry, InlineImage } from "./core/PartsManagers/MediaManager";
+export type { RelationshipEntry } from "./core/PartsManagers/RelManager";
 export type { TableObject, TableRow, TableCell } from "./core/files/table/types";
 export type { FootnoteEntry } from "./core/PartsManagers/FootnoteManager";
 export type { EndnoteEntry } from "./core/PartsManagers/EndnoteManager";
@@ -162,6 +271,8 @@ export type {
   LineNumberingOptions,
 } from "./core/PartsManagers/PageLayoutManager";
 export { PAGE_SIZES, MARGIN_PRESETS, inchesToTwips, cmToTwips, twipsToInches, twipsToCm } from "./core/PartsManagers/PageLayoutManager";
+export { applyBodyPageLayout } from "./core/files/body/pageLayout";
+export type { BodyPageLayoutOpts } from "./core/files/body/pageLayout";
 export type {
   CaptionOptions,
   CaptionNumberingOptions,
