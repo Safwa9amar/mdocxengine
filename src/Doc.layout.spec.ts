@@ -114,4 +114,68 @@ describe("Doc layout / section verbs", () => {
     expect(secs[0].headerText).toBeNull();
     expect(secs[0].footerText).toBeNull();
   });
+
+  test("sections() blank own header part stops inheritance", async () => {
+    const doc = await Doc.open(INPUT);
+    await doc.addHeading("Alpha Part", 1);
+    await doc.addParagraph("a1");
+    await doc.addHeading("Beta Part", 1);
+    await doc.addParagraph("b1");
+    await doc.addHeading("Gamma Part", 1);
+    await doc.addParagraph("g1");
+    const blocks = await doc.blocks();
+    const beta = blocks.findIndex((b) => b.text === "Beta Part");
+    const gamma = blocks.findIndex((b) => b.text === "Gamma Part");
+    await doc.startOnNewPage(beta);
+    await doc.startOnNewPage(gamma);
+    await doc.setSectionHeader(beta, "Own");
+    await doc.setSectionHeader(gamma, ""); // explicitly blank part
+
+    const secs = await doc.sections();
+    expect(secs.length).toBe(3);
+    expect(secs[1].headerText).toBe("Own");
+    // A blank part is still an OWN part — it overrides, not inherits.
+    expect(secs[2].headerText).toBe("");
+  });
+
+  test("sections() keeps non-page field results and strips page fields (complex + fldSimple)", async () => {
+    const doc = await Doc.open(INPUT);
+    // A running header as Word writes it: a complex STYLEREF field whose cached
+    // result is the current chapter title, plus a fldSimple PAGE field with a
+    // cached page number.
+    const headerXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <w:p>
+    <w:r><w:fldChar w:fldCharType="begin"/></w:r>
+    <w:r><w:instrText xml:space="preserve"> STYLEREF "Heading 1" \\* MERGEFORMAT </w:instrText></w:r>
+    <w:r><w:fldChar w:fldCharType="separate"/></w:r>
+    <w:r><w:t>Chapter One</w:t></w:r>
+    <w:r><w:fldChar w:fldCharType="end"/></w:r>
+    <w:fldSimple w:instr=" PAGE \\* MERGEFORMAT "><w:r><w:t>7</w:t></w:r></w:fldSimple>
+  </w:p>
+</w:hdr>`;
+    await doc.engine.header.addHeader("", "default", headerXml);
+
+    const secs = await doc.sections();
+    expect(secs.length).toBe(1);
+    expect(secs[0].headerText).toContain("Chapter One");
+    expect(secs[0].headerText).not.toContain("7");
+  });
+
+  test("sections() startBlockIndex stays correct when the document starts with a table", async () => {
+    const doc = await Doc.open(INPUT);
+    await doc.addTable([["a", "b"], ["1", "2"]], {}, 0); // FIRST block is a table
+    await doc.addHeading("Late Part", 1);
+    const blocks = await doc.blocks();
+    expect(blocks[0].kind).toBe("table");
+    const headingIdx = blocks.findIndex((b) => b.text === "Late Part");
+    await doc.startOnNewPage(headingIdx);
+
+    const secs = await doc.sections();
+    expect(secs.length).toBe(2);
+    expect(secs[0].startBlockIndex).toBe(0);
+    // Paragraph→block mapping is shifted by the table; the section must still
+    // start at the heading's BLOCK index.
+    expect(secs[1].startBlockIndex).toBe(headingIdx);
+  });
 });

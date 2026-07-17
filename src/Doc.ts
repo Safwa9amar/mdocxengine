@@ -178,6 +178,71 @@ function mode(nums: number[]): number | null {
   return best;
 }
 
+/** Extracted content of one header/footer part (internal). */
+interface HeaderFooterContent {
+  text: string;
+  hasPage: boolean;
+}
+
+/** Decode the five predefined XML entities in a `w:t` text node. */
+function decodeXmlEntities(s: string): string {
+  return s
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
+/**
+ * Plain text + PAGE-field flag of one header/footer part's XML.
+ *
+ * Field handling mirrors what Word RENDERS:
+ *  • Complex non-page fields (e.g. a STYLEREF running header) KEEP their cached
+ *    result between `separate` and `end` — that text is exactly what shows on
+ *    the page.
+ *  • PAGE/NUMPAGES fields — complex or `w:fldSimple` — DROP their cached
+ *    result: it's a stale per-page number, not authored content ("Conf" plus a
+ *    cached "1" would otherwise read back as "Conf1").
+ *
+ * Paragraph texts are joined with single spaces so multi-paragraph parts don't
+ * concatenate ("Chapter 3Introduction"), and whitespace runs are collapsed.
+ */
+function extractHeaderFooterContent(xml: string): HeaderFooterContent {
+  const hasPage =
+    /<w:instrText[^>]*>[^<]*\bPAGE\b/.test(xml) ||
+    /<w:fldSimple\b[^>]*w:instr="[^"]*\bPAGE\b/.test(xml);
+
+  // Complex fields: within each begin…end span, strip separate→end only when
+  // the field instruction is PAGE/NUMPAGES; other fields stay untouched.
+  let stripped = xml.replace(
+    /<w:fldChar[^>]*w:fldCharType="begin"[^>]*\/>[\s\S]*?<w:fldChar[^>]*w:fldCharType="end"[^>]*\/>/g,
+    (span) =>
+      /<w:instrText[^>]*>[^<]*\b(?:PAGE|NUMPAGES)\b/.test(span)
+        ? span.replace(/<w:fldChar[^>]*w:fldCharType="separate"[^>]*\/>[\s\S]*$/, "")
+        : span,
+  );
+  // Simple fields: drop the whole element (cached digit included) when its
+  // instruction is a page field; other fldSimple content stays extractable.
+  stripped = stripped.replace(
+    /<w:fldSimple\b[^>]*w:instr="[^"]*\b(?:PAGE|NUMPAGES)\b[^"]*"[^>]*>[\s\S]*?<\/w:fldSimple>/g,
+    "",
+  );
+
+  const text = stripped
+    .split("</w:p>")
+    .map((chunk) =>
+      Array.from(chunk.matchAll(/<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g))
+        .map((m) => decodeXmlEntities(m[1] ?? ""))
+        .join(""),
+    )
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return { text, hasPage };
+}
+
 /** Options accepted by paragraph/heading verbs. */
 export type ParagraphFormat = Omit<StyledParagraphOptions, "outlineLevel" | "styleId"> & {
   styleId?: string;
@@ -698,8 +763,11 @@ export class Doc {
     });
 
     const out: SectionInfo[] = [];
-    let header: { text: string; hasPage: boolean } | null = null;
-    let footer: { text: string; hasPage: boolean } | null = null;
+    // Sections often share one part (that's what inheritance references) —
+    // read each part at most once per call.
+    const partCache = new Map<string, HeaderFooterContent | null>();
+    let header: HeaderFooterContent | null = null;
+    let footer: HeaderFooterContent | null = null;
 
     for (let k = 0; k < entries.length; k++) {
       const prev = entries[k - 1];
@@ -709,8 +777,10 @@ export class Doc {
         k === 0 ? 0 : Math.min((prevBreakBlock ?? -1) + 1, blocks.length);
 
       const own = entries[k];
-      const ownHeader = await this.readHeaderFooterPart(own.headerRefs);
-      const ownFooter = await this.readHeaderFooterPart(own.footerRefs);
+      const [ownHeader, ownFooter] = await Promise.all([
+        this.readHeaderFooterPart(own.headerRefs, partCache),
+        this.readHeaderFooterPart(own.footerRefs, partCache),
+      ]);
       if (ownHeader) header = ownHeader;
       if (ownFooter) footer = ownFooter;
 
@@ -728,43 +798,31 @@ export class Doc {
   }
 
   /**
-   * Plain text + PAGE-field flag of the header/footer part behind `refs`
-   * (prefers the "default" ref). null when no part resolves — including on any
+   * Content of the header/footer part behind `refs` (prefers the "default"
+   * ref), memoized by relId in `cache` so sections sharing a part read it once
+   * per {@link sections} call. null when no part resolves — including on any
    * read/parse failure, so chrome extraction can never throw.
    */
   private async readHeaderFooterPart(
     refs: SectionHeaderFooterRef[],
-  ): Promise<{ text: string; hasPage: boolean } | null> {
+    cache: Map<string, HeaderFooterContent | null>,
+  ): Promise<HeaderFooterContent | null> {
     const ref = refs.find((r) => r.type === "default") ?? refs[0];
     if (!ref?.relId) return null;
+    if (cache.has(ref.relId)) return cache.get(ref.relId) ?? null;
+    let content: HeaderFooterContent | null = null;
     try {
       const target = await this.engine.rels.getTarget(ref.relId);
-      if (!target) return null;
-      const path = target.startsWith("word/") ? target : `word/${target.replace(/^\/+/, "")}`;
-      const xml = this.engine.zip.readAsText(path);
-      if (!xml) return null;
-      const decode = (s: string) =>
-        s
-          .replace(/&lt;/g, "<")
-          .replace(/&gt;/g, ">")
-          .replace(/&quot;/g, '"')
-          .replace(/&apos;/g, "'")
-          .replace(/&amp;/g, "&");
-      // Exclude cached field-RESULT text (e.g. the "1" Word caches between a PAGE
-      // field's `separate` and `end` markers) — it's a computed value, not authored
-      // header/footer content, and would otherwise pollute `text` (e.g. "Conf" + "1").
-      const withoutFieldResults = xml.replace(
-        /<w:fldChar[^>]*w:fldCharType="separate"[^>]*\/>[\s\S]*?<w:fldChar[^>]*w:fldCharType="end"[^>]*\/>/g,
-        "",
-      );
-      const text = Array.from(withoutFieldResults.matchAll(/<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g))
-        .map((m) => decode(m[1] ?? ""))
-        .join("")
-        .trim();
-      return { text, hasPage: /<w:instrText[^>]*>[^<]*\bPAGE\b/.test(xml) };
+      if (target) {
+        const path = target.startsWith("word/") ? target : `word/${target.replace(/^\/+/, "")}`;
+        const xml = this.engine.zip.readAsText(path);
+        if (xml) content = extractHeaderFooterContent(xml);
+      }
     } catch {
-      return null;
+      content = null;
     }
+    cache.set(ref.relId, content);
+    return content;
   }
 
   /** Best-effort delete of a header/footer part by its relationship id (cleanup). */
