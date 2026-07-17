@@ -70,4 +70,48 @@ describe("Doc layout / section verbs", () => {
     const final = secs[secs.length - 1];
     expect(final.pageNumberType).toEqual({ format: "lowerRoman", start: 1 });
   });
+
+  test("sections() maps start block indices and resolves header inheritance", async () => {
+    const doc = await Doc.open(INPUT);
+    await doc.addHeading("Part One", 1);
+    await doc.addParagraph("p1");
+    await doc.addHeading("Part Two", 1);
+    await doc.addParagraph("p2");
+    await doc.addHeading("Part Three", 1);
+    await doc.addParagraph("p3");
+    const blocks = await doc.blocks();
+    const two = blocks.findIndex((b) => b.text === "Part Two");
+    const three = blocks.findIndex((b) => b.text === "Part Three");
+    // addSectionBreak mutates an existing paragraph in place — indices stay valid.
+    await doc.startOnNewPage(two);
+    await doc.startOnNewPage(three);
+    await doc.setSectionHeader(two, "Part Two — Methods");
+    await doc.setSectionFooter(two, { text: "Conf", pageNumbers: true });
+
+    const secs = await doc.sections();
+    expect(secs.length).toBe(3);
+    expect(secs[0].startBlockIndex).toBe(0);
+    expect(secs[1].startBlockIndex).toBe(two);
+    expect(secs[2].startBlockIndex).toBe(three);
+    // Section 0 has no part of its own and nothing before it → none.
+    expect(secs[0].headerText).toBeNull();
+    expect(secs[0].footerText).toBeNull();
+    expect(secs[0].footerHasPageNumbers).toBe(false);
+    // Section 1 owns both parts.
+    expect(secs[1].headerText).toBe("Part Two — Methods");
+    expect(secs[1].footerText).toBe("Conf");
+    expect(secs[1].footerHasPageNumbers).toBe(true);
+    // Section 2 has no refs → inherits section 1's parts (ECMA-376).
+    expect(secs[2].headerText).toBe("Part Two — Methods");
+    expect(secs[2].footerHasPageNumbers).toBe(true);
+  });
+
+  test("sections() on an untouched document reports one bare section", async () => {
+    const doc = await Doc.open(INPUT);
+    const secs = await doc.sections();
+    expect(secs.length).toBe(1);
+    expect(secs[0].startBlockIndex).toBe(0);
+    expect(secs[0].headerText).toBeNull();
+    expect(secs[0].footerText).toBeNull();
+  });
 });
