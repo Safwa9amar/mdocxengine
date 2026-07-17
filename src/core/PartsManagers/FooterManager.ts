@@ -4,6 +4,7 @@ import { ContentTypesManager } from "./ContentTypesManager";
 import DocumentManager from "./DocumentManager";
 import AdmZip from "adm-zip";
 import { FooterFile } from "@/constants";
+import { removeSectPrReferenceFromDocument } from "@/core/files/body/sectPr";
 
 const FOOTER_REL_TYPE =
   "http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer";
@@ -148,7 +149,9 @@ export default class FooterManager {
     const xml = XmlUtils.buildXml(docObj["w:document"], {
       rootName: "w:document",
       headless: false,
-      pretty: true,
+      // NOT pretty: indentation between top-level body children becomes #text
+      // "blocks" in splitDocument, corrupting every consumer's block indices.
+      pretty: false,
     });
     this.zip.addFile("word/document.xml", Buffer.from(xml, "utf-8"));
   }
@@ -459,25 +462,9 @@ export default class FooterManager {
   private async removeFooterReferenceFromDocument(relId: string): Promise<void> {
     const docXml = this.zip.readAsText("word/document.xml");
     if (!docXml) return;
-
-    const docObj = await XmlUtils.parseXml(docXml);
-    const body   = docObj?.["w:document"]?.["w:body"];
-    if (!body?.["w:sectPr"]) return;
-
-    const sectPr = body["w:sectPr"];
-    if (!sectPr["w:footerReference"]) return;
-
-    const refs = Array.isArray(sectPr["w:footerReference"])
-      ? sectPr["w:footerReference"]
-      : [sectPr["w:footerReference"]];
-
-    sectPr["w:footerReference"] = refs.filter((r: any) => r.$?.["r:id"] !== relId);
-
-    const newDocXml = XmlUtils.buildXml(docObj["w:document"], {
-      rootName: "w:document",
-      headless: false,
-      pretty: true,
-    });
-    this.zip.addFile("word/document.xml", Buffer.from(newDocXml, "utf-8"));
+    // Byte-safe: delete just the self-closing <w:footerReference> tag wherever it
+    // is (body or any section) — never rebuild the body (which reorders tables).
+    const next = removeSectPrReferenceFromDocument(docXml, "footer", relId);
+    this.zip.addFile("word/document.xml", Buffer.from(next, "utf-8"));
   }
 }

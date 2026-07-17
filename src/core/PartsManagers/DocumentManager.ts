@@ -13,6 +13,19 @@ import AdmZip from "adm-zip";
 
 const DOC_PATH = "word/document.xml";
 
+/**
+ * True for body children that occupy a slot in the editable block-index space.
+ * Excludes the trailing w:sectPr AND whitespace-only #text runs (left behind by
+ * pretty-printing round-trips) — counting the latter as blocks would corrupt
+ * every consumer's block indices. The excluded blocks stay in the document on
+ * byte-safe reassembly; they're just never indexable.
+ */
+function isEditableBlock(b: BodyBlock): boolean {
+  if (b.kind === "sectPr") return false;
+  if (b.kind === "other" && b.tag === "#text" && b.xml.trim() === "") return false;
+  return true;
+}
+
 export default class DocumentManager {
   zip: AdmZip;
 
@@ -236,7 +249,7 @@ export default class DocumentManager {
   public async getBlocks(): Promise<BodyBlock[]> {
     const xml = this.zip.readAsText(DOC_PATH);
     if (!xml) return [];
-    return splitDocument(xml).blocks.filter((b) => b.kind !== "sectPr");
+    return splitDocument(xml).blocks.filter(isEditableBlock);
   }
 
   /**
@@ -285,8 +298,8 @@ export default class DocumentManager {
     const split = splitDocument(xml);
 
     const editablePositions = split.blocks
-      .map((b, i) => ({ i, kind: b.kind }))
-      .filter((e) => e.kind !== "sectPr")
+      .map((b, i) => ({ b, i }))
+      .filter((e) => isEditableBlock(e.b))
       .map((e) => e.i);
 
     const pos = editablePositions[index];
@@ -315,8 +328,8 @@ export default class DocumentManager {
     const split = splitDocument(xml);
 
     const editablePositions = split.blocks
-      .map((b, i) => ({ i, kind: b.kind }))
-      .filter((e) => e.kind !== "sectPr")
+      .map((b, i) => ({ b, i }))
+      .filter((e) => isEditableBlock(e.b))
       .map((e) => e.i);
 
     let target: number;
@@ -341,8 +354,8 @@ export default class DocumentManager {
     const split = splitDocument(xml);
 
     const editablePositions = split.blocks
-      .map((b, i) => ({ i, kind: b.kind }))
-      .filter((e) => e.kind !== "sectPr")
+      .map((b, i) => ({ b, i }))
+      .filter((e) => isEditableBlock(e.b))
       .map((e) => e.i);
 
     const pos = editablePositions[index];

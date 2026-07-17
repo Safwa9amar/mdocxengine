@@ -178,4 +178,31 @@ describe("Doc layout / section verbs", () => {
     // start at the heading's BLOCK index.
     expect(secs[1].startBlockIndex).toBe(headingIdx);
   });
+
+  test("formatPageNumbers keeps the block count (no phantom #text blocks)", async () => {
+    const doc = await Doc.open(INPUT);
+    const before = (await doc.blocks()).length;
+    await doc.engine.footer.formatPageNumbers({ format: "lowerRoman", startAt: 1 });
+    const after = (await doc.blocks()).length;
+    expect(after).toBe(before);
+  });
+
+  test("getBlocks heals an already-prettified document.xml", async () => {
+    const doc = await Doc.open(INPUT);
+    const before = (await doc.blocks()).length;
+    // Simulate a doc previously corrupted by a pretty-printing round-trip:
+    // whitespace between top-level body children.
+    const xml = doc.engine.zip.readAsText("word/document.xml");
+    const prettified = xml.replace(/(<\/w:p>)(<w:p)/g, "$1\n  $2");
+    expect(prettified.length).toBeGreaterThan(xml.length); // injection happened
+    doc.engine.zip.addFile("word/document.xml", Buffer.from(prettified, "utf-8"));
+    const after = (await doc.blocks()).length;
+    expect(after).toBe(before);
+
+    // Positional edits must address the SAME healed index space.
+    await doc.editParagraph(1, "Healed edit");
+    const blocks = await doc.blocks();
+    expect(blocks.length).toBe(before);
+    expect(blocks[1].text).toBe("Healed edit");
+  });
 });
