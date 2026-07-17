@@ -179,6 +179,28 @@ describe("Doc layout / section verbs", () => {
     expect(secs[1].startBlockIndex).toBe(headingIdx);
   });
 
+  test("sections(preloadedBlocks) matches sections() on a 3-section doc", async () => {
+    const doc = await Doc.open(INPUT);
+    await doc.addHeading("Pre One", 1);
+    await doc.addParagraph("p1");
+    await doc.addHeading("Pre Two", 1);
+    await doc.addParagraph("p2");
+    await doc.addHeading("Pre Three", 1);
+    await doc.addParagraph("p3");
+    const blocks = await doc.blocks();
+    const two = blocks.findIndex((b) => b.text === "Pre Two");
+    const three = blocks.findIndex((b) => b.text === "Pre Three");
+    await doc.startOnNewPage(two);
+    await doc.startOnNewPage(three);
+    await doc.setSectionHeader(two, "Pre Two — Methods");
+    await doc.setSectionFooter(two, { text: "Conf", pageNumbers: true });
+
+    const fresh = await doc.sections();
+    const preloaded = await doc.sections(await doc.engine.document.getBlocks());
+    expect(fresh.length).toBe(3);
+    expect(preloaded).toEqual(fresh);
+  });
+
   test("formatPageNumbers keeps the block count (no phantom #text blocks)", async () => {
     const doc = await Doc.open(INPUT);
     const before = (await doc.blocks()).length;

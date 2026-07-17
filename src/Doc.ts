@@ -750,10 +750,14 @@ export class Doc {
    * setSectionFooter. Inheritance is resolved the way Word renders it
    * (ECMA-376): a section without its own reference uses the previous
    * section's part; a first section without one has none.
+   *
+   * @param preloadedBlocks Pass blocks you already fetched from
+   *   `engine.document.getBlocks()` to avoid a second body parse; they must be
+   *   CURRENT for this document state.
    */
-  async sections(): Promise<SectionInfo[]> {
+  async sections(preloadedBlocks?: BodyBlock[]): Promise<SectionInfo[]> {
     const [blocks, entries] = await Promise.all([
-      this.engine.document.getBlocks(),
+      preloadedBlocks ? Promise.resolve(preloadedBlocks) : this.engine.document.getBlocks(),
       this.engine.sections.getSections(),
     ]);
     // Section boundaries live on paragraphs; map paragraph index → block index.
