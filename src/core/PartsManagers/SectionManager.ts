@@ -1,5 +1,13 @@
 import * as XmlUtils from "@/utils/xmlUtils";
 import AdmZip from "adm-zip";
+import { splitDocument, assembleDocument } from "@/core/files/body/OrderedBody";
+import {
+  upsertSectPrReference,
+  upsertParagraphSectPr,
+  removeParagraphSectPr,
+  editSectPrWithinParagraph,
+  editBodySectPr,
+} from "@/core/files/body/sectPr";
 
 const DOCUMENT_PATH = "word/document.xml";
 
@@ -38,6 +46,8 @@ export interface SectionEntry {
   margins?: SectionMargins;
   headerRefs: SectionHeaderFooterRef[];
   footerRefs: SectionHeaderFooterRef[];
+  /** Parsed w:pgNumType, when the section sets one (page-number format/restart). */
+  pageNumberType?: { format: string; start?: number };
   paragraphIndex?: number;
 }
 
@@ -113,7 +123,17 @@ export class SectionManager {
       (f: any) => ({ relId: f.$?.["r:id"] ?? "", type: (f.$?.["w:type"] ?? "default") as any }),
     );
 
-    return { type, pageSize, margins, headerRefs, footerRefs };
+    const pgNumType = sectPr?.["w:pgNumType"];
+    const pageNumberType = pgNumType
+      ? {
+          format: (pgNumType.$?.["w:fmt"] as string) ?? "decimal",
+          ...(pgNumType.$?.["w:start"] !== undefined
+            ? { start: parseInt(pgNumType.$["w:start"], 10) }
+            : {}),
+        }
+      : undefined;
+
+    return { type, pageSize, margins, headerRefs, footerRefs, pageNumberType };
   }
 
   private applyLayout(sectPr: any, layout: SectionLayout): void {
@@ -210,37 +230,34 @@ export class SectionManager {
     return sections;
   }
 
+  // Byte-safe string edit of the body: locate the Nth `<w:p>` and inject/remove a
+  // `<w:sectPr>` in its `<w:pPr>`, leaving every other block (tables, drawings,
+  // the final sectPr) byte-identical. The xml2js full-body rebuild used elsewhere
+  // would reorder tables; this never touches them.
   public async addSectionBreak(
     paragraphIndex: number,
     type: "nextPage" | "continuous" | "evenPage" | "oddPage",
   ): Promise<void> {
-    const obj        = await this.readDocument();
-    const body       = obj["w:document"]["w:body"];
-    const paragraphs = this.getBodyParagraphs(obj);
-    const idx        = Math.max(0, Math.min(paragraphIndex, paragraphs.length - 1));
-    const para       = paragraphs[idx];
-
-    if (!para["w:pPr"]) para["w:pPr"] = {};
-    para["w:pPr"]["w:sectPr"] = {
-      "w:type": { $: { "w:val": type } },
-    };
-
-    body["w:p"] = paragraphs;
-    await this.writeDocument(obj);
+    const xml = this.zip.readAsText(DOCUMENT_PATH);
+    if (!xml) throw new Error("word/document.xml not found");
+    const split = splitDocument(xml);
+    const paraBlocks = split.blocks.filter((b) => b.kind === "paragraph");
+    if (!paraBlocks.length) return;
+    const idx = Math.max(0, Math.min(paragraphIndex, paraBlocks.length - 1));
+    const sectPr = `<w:sectPr><w:type w:val="${type}"/></w:sectPr>`;
+    paraBlocks[idx].xml = upsertParagraphSectPr(paraBlocks[idx].xml, sectPr);
+    this.zip.addFile(DOCUMENT_PATH, Buffer.from(assembleDocument(split), "utf-8"));
   }
 
   public async removeSectionBreak(paragraphIndex: number): Promise<void> {
-    const obj        = await this.readDocument();
-    const body       = obj["w:document"]["w:body"];
-    const paragraphs = this.getBodyParagraphs(obj);
-    const para       = paragraphs[paragraphIndex];
-
-    if (para?.["w:pPr"]?.["w:sectPr"]) {
-      delete para["w:pPr"]["w:sectPr"];
-    }
-
-    body["w:p"] = paragraphs;
-    await this.writeDocument(obj);
+    const xml = this.zip.readAsText(DOCUMENT_PATH);
+    if (!xml) throw new Error("word/document.xml not found");
+    const split = splitDocument(xml);
+    const paraBlocks = split.blocks.filter((b) => b.kind === "paragraph");
+    const blk = paraBlocks[paragraphIndex];
+    if (!blk) return;
+    blk.xml = removeParagraphSectPr(blk.xml);
+    this.zip.addFile(DOCUMENT_PATH, Buffer.from(assembleDocument(split), "utf-8"));
   }
 
   public async setSectionLayout(sectionIndex: number, layout: SectionLayout): Promise<void> {
@@ -255,14 +272,7 @@ export class SectionManager {
     relId: string,
     type: "default" | "first" | "even" = "default",
   ): Promise<void> {
-    const { obj, sectPr, isBody } = await this.findSectPr(sectionIndex);
-    const refs = this.norm(sectPr["w:headerReference"]).filter(
-      (h: any) => h.$?.["w:type"] !== type,
-    );
-    refs.push({ $: { "w:type": type, "r:id": relId } });
-    sectPr["w:headerReference"] = refs;
-    if (isBody) obj["w:document"]["w:body"]["w:sectPr"] = sectPr;
-    await this.writeDocument(obj);
+    await this.editSectionSectPr(sectionIndex, (s) => upsertSectPrReference(s, "header", type, relId));
   }
 
   public async setSectionFooter(
@@ -270,13 +280,34 @@ export class SectionManager {
     relId: string,
     type: "default" | "first" | "even" = "default",
   ): Promise<void> {
-    const { obj, sectPr, isBody } = await this.findSectPr(sectionIndex);
-    const refs = this.norm(sectPr["w:footerReference"]).filter(
-      (f: any) => f.$?.["w:type"] !== type,
-    );
-    refs.push({ $: { "w:type": type, "r:id": relId } });
-    sectPr["w:footerReference"] = refs;
-    if (isBody) obj["w:document"]["w:body"]["w:sectPr"] = sectPr;
-    await this.writeDocument(obj);
+    await this.editSectionSectPr(sectionIndex, (s) => upsertSectPrReference(s, "footer", type, relId));
+  }
+
+  /**
+   * Apply `transform` to the `<w:sectPr>` of section `sectionIndex` — byte-safe
+   * string surgery. Intermediate sections live inside a paragraph's `<w:pPr>`;
+   * the final section is the body's `<w:sectPr>` (created if absent). Sections
+   * are counted in document order: paragraph-level sectPrs first, final last —
+   * the same order as getSections().
+   */
+  private async editSectionSectPr(sectionIndex: number, transform: (sectPrXml: string) => string): Promise<void> {
+    const xml = this.zip.readAsText(DOCUMENT_PATH);
+    if (!xml) throw new Error("word/document.xml not found");
+    const split = splitDocument(xml);
+    const interParas = split.blocks.filter((b) => b.kind === "paragraph" && /<w:sectPr\b/.test(b.xml));
+    const total = interParas.length + 1; // + final body section
+
+    if (sectionIndex < 0 || sectionIndex >= total) {
+      throw new Error(`Section index ${sectionIndex} out of range (0–${total - 1})`);
+    }
+
+    if (sectionIndex < interParas.length) {
+      const blk = interParas[sectionIndex];
+      blk.xml = editSectPrWithinParagraph(blk.xml, transform);
+      this.zip.addFile(DOCUMENT_PATH, Buffer.from(assembleDocument(split), "utf-8"));
+    } else {
+      // Final/body section.
+      this.zip.addFile(DOCUMENT_PATH, Buffer.from(editBodySectPr(xml, transform), "utf-8"));
+    }
   }
 }
