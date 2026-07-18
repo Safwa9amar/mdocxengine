@@ -201,6 +201,36 @@ describe("Doc layout / section verbs", () => {
     expect(preloaded).toEqual(fresh);
   });
 
+  test("sections() derives pageNumberFormat from the PAGE field switch (no pgNumType)", async () => {
+    const doc = await Doc.open(INPUT);
+    await doc.addPageNumbers({ format: "lowerRoman" });
+    // The insertion path encodes the format ONLY as a field switch — no pgNumType.
+    const raw = await doc.engine.sections.getSections();
+    expect(raw[raw.length - 1].pageNumberType).toBeUndefined();
+
+    const secs = await doc.sections();
+    expect(secs.length).toBe(1);
+    expect(secs[0].footerHasPageNumbers).toBe(true);
+    expect(secs[0].pageNumberFormat).toBe("lowerRoman");
+  });
+
+  test("sections() lets w:pgNumType override the field-switch format", async () => {
+    const doc = await Doc.open(INPUT);
+    await doc.addPageNumbers({ format: "lowerRoman" });
+    await doc.engine.footer.formatPageNumbers({ format: "upperRoman" });
+    const secs = await doc.sections();
+    expect(secs.length).toBe(1);
+    expect(secs[0].pageNumberFormat).toBe("upperRoman");
+  });
+
+  test("sections() ignores first/even-only header refs (default parts only)", async () => {
+    const doc = await Doc.open(INPUT);
+    await doc.engine.header.addHeader("First Page Only", "first");
+    const secs = await doc.sections();
+    expect(secs.length).toBe(1);
+    expect(secs[0].headerText).toBeNull();
+  });
+
   test("formatPageNumbers keeps the block count (no phantom #text blocks)", async () => {
     const doc = await Doc.open(INPUT);
     const before = (await doc.blocks()).length;

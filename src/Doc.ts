@@ -182,6 +182,33 @@ function mode(nums: number[]): number | null {
 interface HeaderFooterContent {
   text: string;
   hasPage: boolean;
+  /**
+   * Page-number format in w:pgNumType vocabulary ("lowerRoman", …), derived
+   * from the PAGE field's `\*` switch. null when there is no PAGE field or
+   * its switch isn't recognized.
+   */
+  pageFormat: string | null;
+}
+
+/**
+ * Inverse of FooterManager's FORMAT_SWITCH: PAGE field `\*` switch token →
+ * w:pgNumType format. Case-sensitive — "roman" and "ROMAN" differ.
+ */
+const SWITCH_TO_FORMAT: Record<string, string> = {
+  ARABIC: "decimal",
+  ROMAN: "upperRoman",
+  roman: "lowerRoman",
+  ALPHABETIC: "upperLetter",
+  alphabetic: "lowerLetter",
+};
+
+/** The w:pgNumType-vocabulary format encoded in a PAGE field instruction, if any. */
+function pageFormatFromInstr(instr: string): string | null {
+  for (const m of instr.matchAll(/\\\*\s+([A-Za-z]+)/g)) {
+    const fmt = SWITCH_TO_FORMAT[m[1]];
+    if (fmt) return fmt;
+  }
+  return null;
 }
 
 /** Decode the five predefined XML entities in a `w:t` text node. */
@@ -209,9 +236,18 @@ function decodeXmlEntities(s: string): string {
  * concatenate ("Chapter 3Introduction"), and whitespace runs are collapsed.
  */
 function extractHeaderFooterContent(xml: string): HeaderFooterContent {
-  const hasPage =
-    /<w:instrText[^>]*>[^<]*\bPAGE\b/.test(xml) ||
-    /<w:fldSimple\b[^>]*w:instr="[^"]*\bPAGE\b/.test(xml);
+  // The PAGE field's instruction — complex (<w:instrText>) or simple
+  // (w:fldSimple/@w:instr) — drives both the flag and the format.
+  const pageInstr =
+    Array.from(xml.matchAll(/<w:instrText[^>]*>([^<]*)<\/w:instrText>/g))
+      .map((m) => m[1] ?? "")
+      .find((t) => /\bPAGE\b/.test(t)) ??
+    Array.from(xml.matchAll(/<w:fldSimple\b[^>]*w:instr="([^"]*)"/g))
+      .map((m) => m[1] ?? "")
+      .find((t) => /\bPAGE\b/.test(t)) ??
+    null;
+  const hasPage = pageInstr !== null;
+  const pageFormat = pageInstr !== null ? pageFormatFromInstr(pageInstr) : null;
 
   // Complex fields: within each begin…end span, strip separate→end only when
   // the field instruction is PAGE/NUMPAGES; other fields stay untouched.
@@ -240,7 +276,7 @@ function extractHeaderFooterContent(xml: string): HeaderFooterContent {
     .replace(/\s+/g, " ")
     .trim();
 
-  return { text, hasPage };
+  return { text, hasPage, pageFormat };
 }
 
 /** Options accepted by paragraph/heading verbs. */
@@ -280,7 +316,13 @@ export interface SectionInfo {
   footerText: string | null;
   /** True when the effective footer part contains a PAGE field. */
   footerHasPageNumbers: boolean;
-  /** This section's own w:pgNumType format (e.g. "decimal", "lowerRoman"), if set. */
+  /**
+   * Page-number format in w:pgNumType vocabulary ("decimal", "lowerRoman", …).
+   * The section's own w:pgNumType format wins when set; otherwise the format
+   * is derived from the effective footer's PAGE field `\*` switch (the normal
+   * insertion path writes only the switch), which travels with the inherited
+   * part. null when neither exists.
+   */
   pageNumberFormat: string | null;
   /** This section's own w:pgNumType start value, if set. */
   pageNumberStart: number | null;
@@ -794,7 +836,9 @@ export class Doc {
         headerText: header ? header.text : null,
         footerText: footer ? footer.text : null,
         footerHasPageNumbers: !!footer?.hasPage,
-        pageNumberFormat: own.pageNumberType?.format ?? null,
+        // Explicit pgNumType wins; else the format the effective footer's PAGE
+        // field renders with (it travels with the inherited part).
+        pageNumberFormat: own.pageNumberType?.format ?? footer?.pageFormat ?? null,
         pageNumberStart: own.pageNumberType?.start ?? null,
       });
     }
@@ -802,16 +846,17 @@ export class Doc {
   }
 
   /**
-   * Content of the header/footer part behind `refs` (prefers the "default"
-   * ref), memoized by relId in `cache` so sections sharing a part read it once
-   * per {@link sections} call. null when no part resolves — including on any
+   * Content of the DEFAULT-type header/footer part behind `refs` (first/even
+   * page-only refs are not the running chrome and are ignored), memoized by
+   * relId in `cache` so sections sharing a part read it once per
+   * {@link sections} call. null when no part resolves — including on any
    * read/parse failure, so chrome extraction can never throw.
    */
   private async readHeaderFooterPart(
     refs: SectionHeaderFooterRef[],
     cache: Map<string, HeaderFooterContent | null>,
   ): Promise<HeaderFooterContent | null> {
-    const ref = refs.find((r) => r.type === "default") ?? refs[0];
+    const ref = refs.find((r) => r.type === "default");
     if (!ref?.relId) return null;
     if (cache.has(ref.relId)) return cache.get(ref.relId) ?? null;
     let content: HeaderFooterContent | null = null;
