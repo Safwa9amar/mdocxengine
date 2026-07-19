@@ -22,6 +22,35 @@ export interface ImageEntry {
   buffer: Buffer;
 }
 
+/** EMU per pixel at 96 DPI (1 px = 9525 EMU). */
+export const EMU_PER_PIXEL = 9525;
+/** Convert EMU to whole pixels at 96 DPI. */
+export const emuToPixels = (emu: number): number => Math.round(emu / EMU_PER_PIXEL);
+/** Convert pixels (96 DPI) to EMU. */
+export const pixelsToEmu = (px: number): number => Math.round(px * EMU_PER_PIXEL);
+
+/** An inline image resolved from a paragraph block's `<w:drawing>`. */
+export interface InlineImage {
+  /** The `r:embed` relationship id. */
+  relId: string;
+  /** The resolved relationship target (e.g. "media/image1.png"). */
+  target: string;
+  /** The raw image bytes. */
+  bytes: Buffer;
+  /** File extension without dot (e.g. "png"). */
+  extension: string;
+  /** MIME type for the extension (e.g. "image/png"). */
+  mime: string;
+  /** Inline display width in EMU (0 if no `<wp:extent>`). */
+  widthEmu: number;
+  /** Inline display height in EMU (0 if no `<wp:extent>`). */
+  heightEmu: number;
+  /** Inline display width in pixels @96dpi. */
+  widthPx: number;
+  /** Inline display height in pixels @96dpi. */
+  heightPx: number;
+}
+
 export class MediaManager {
   private zip: AdmZip;
   private rels: RelManager;
@@ -64,6 +93,71 @@ export class MediaManager {
   public extractImage(name: string): Buffer | null {
     const entry = this.zip.getEntry(`${MEDIA_DIR}/${name}`);
     return entry ? entry.getData() : null;
+  }
+
+  /**
+   * Resolve a relationship id (e.g. an image's `r:embed`) to its bytes via the
+   * document relationships. Returns null if the rel or the target part is missing.
+   */
+  public async getImageByRelId(relId: string): Promise<Buffer | null> {
+    const target = await this.rels.getTarget(relId);
+    if (!target) return null;
+    return this.readByTarget(target);
+  }
+
+  /**
+   * Read a media part by its relationship `Target` (e.g. "media/image1.png").
+   * Targets are relative to `word/` unless already absolute/prefixed.
+   */
+  private readByTarget(target: string): Buffer | null {
+    const path = target.startsWith("/")
+      ? target.slice(1)
+      : target.startsWith("word/")
+        ? target
+        : `word/${target}`;
+    const entry = this.zip.getEntry(path);
+    return entry ? entry.getData() : null;
+  }
+
+  /**
+   * Extract the inline image embedded in a paragraph/run XML string (a block that
+   * carries `<w:drawing>` with `<a:blip r:embed="…">`). Resolves the relationship
+   * to the media bytes and reads the inline display size from `<wp:extent>`.
+   * Returns null when the block has no inline image or it can't be resolved.
+   *
+   * Replaces hand-rolled `r:embed` + rels + `wp:extent` regex on the caller side.
+   */
+  public async extractInlineImage(blockXml: string): Promise<InlineImage | null> {
+    const embed = /r:embed="([^"]+)"/.exec(blockXml);
+    if (!embed) return null;
+    const relId = embed[1];
+    const target = await this.rels.getTarget(relId);
+    if (!target) return null;
+    const bytes = this.readByTarget(target);
+    if (!bytes) return null;
+
+    const extension = (target.split(".").pop() || "png").toLowerCase();
+    const mime = CONTENT_TYPE_MAP[extension] ?? "application/octet-stream";
+
+    let widthEmu = 0;
+    let heightEmu = 0;
+    const ext = /<wp:extent\b[^>]*\bcx="(\d+)"[^>]*\bcy="(\d+)"/.exec(blockXml);
+    if (ext) {
+      widthEmu = Number(ext[1]);
+      heightEmu = Number(ext[2]);
+    }
+
+    return {
+      relId,
+      target,
+      bytes,
+      extension,
+      mime,
+      widthEmu,
+      heightEmu,
+      widthPx: emuToPixels(widthEmu),
+      heightPx: emuToPixels(heightEmu),
+    };
   }
 
   /**

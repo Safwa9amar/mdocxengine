@@ -161,6 +161,25 @@ export class Run {
   }
 
   /**
+   * Mark the run as right-to-left (`<w:rtl/>`) so Word shapes Arabic / Hebrew
+   * text correctly. Pass `false` to remove the marker.
+   */
+  public setRtl(enable = true): void {
+    const props = this.ensureProperties();
+    if (enable) {
+      props["w:rtl"] = {};
+    } else {
+      delete props["w:rtl"];
+    }
+  }
+
+  /** Determine if the run is marked right-to-left. */
+  public isRtl(): boolean {
+    const rPr = this.run["w:rPr"];
+    return rPr != null && "w:rtl" in rPr;
+  }
+
+  /**
    * Determine if the run is bold.
    */
   public isBold(): boolean {

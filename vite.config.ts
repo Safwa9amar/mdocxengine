@@ -22,7 +22,11 @@ export default defineConfig({
 
   resolve: {
     alias: {
-      "@/*": `${resolve(__dirname, "src/*")}/`,
+      // `@/foo` → `src/foo`. The "@" entry is what Vite actually matches
+      // (its string aliases are prefix-based: `^@(/|$)`), so it correctly
+      // resolves `@/index`, `@/utils/...` etc. without clobbering scoped
+      // packages like `@google/genai`. The legacy "@/*" glob never matched.
+      "@": resolve(__dirname, "src"),
     },
   },
 

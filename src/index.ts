@@ -151,6 +151,81 @@ class Mdocxengine {
     // 5. Restart body numbering (formatPageNumbers targets the body/final section).
     await this.footer.formatPageNumbers({ format: bodyFormat, startAt: bodyStartAt });
   }
+
+  /**
+   * Replace the image embedded in the figure block at editable `index` with new
+   * bytes — the engine-level primitive behind the app's crop / rotate / replace /
+   * remove-background tools. Composes MediaManager (bytes, rels, content-types)
+   * and DocumentManager (block XML) so callers never touch OOXML.
+   *
+   * Byte swap:
+   *  • Same extension as the current image → overwrite the media part in place
+   *    (relationship + inline reference untouched).
+   *  • Different extension (e.g. jpeg → transparent PNG for background removal) →
+   *    register a NEW media part + content-type + relationship and repoint the
+   *    block's `r:embed` to it. The superseded part is left orphaned (Word ignores
+   *    unreferenced media); we don't delete it because another block may share it.
+   *
+   * Optional `opts.widthPx`/`heightPx` are the NEW intrinsic pixel size. When the
+   * aspect ratio changed (crop, rotate ±90°, replace) the drawing's display box is
+   * rescaled to keep the current display WIDTH and apply the new ratio, so the
+   * image isn't stretched. Omit them (or pass the same ratio) to leave the box as-is.
+   *
+   * @param index   Editable block index (matches DocumentManager.getBlocks order).
+   * @param buffer  New image bytes.
+   * @param ext     New image extension without dot ("png", "jpeg", "jpg", "gif").
+   */
+  async replaceImageAtBlock(
+    index: number,
+    buffer: Buffer,
+    ext: string,
+    opts?: { widthPx?: number; heightPx?: number },
+  ): Promise<void> {
+    const blocks = await this.document.getBlocks();
+    const block = blocks[index];
+    if (!block || block.kind !== "paragraph" || !block.xml.includes("<w:drawing>")) {
+      throw new Error(`replaceImageAtBlock: block ${index} is not an image`);
+    }
+    const embed = /r:embed="([^"]+)"/.exec(block.xml);
+    if (!embed) throw new Error(`replaceImageAtBlock: block ${index} has no embedded image`);
+    const oldRelId = embed[1];
+
+    const target = await this.rels.getTarget(oldRelId); // e.g. "media/image1.jpeg"
+    const oldExt = (target?.split(".").pop() ?? "").toLowerCase();
+    const newExt = ext.toLowerCase().replace(/^\./, "");
+
+    let xml = block.xml;
+    if (target && oldExt === newExt) {
+      // Same format → overwrite bytes in place; block XML unchanged.
+      const name = target.split("/").pop()!;
+      this.media.replaceImage(name, buffer);
+    } else {
+      // Format change (or unresolvable target) → new part + repoint the relationship.
+      const { relId } = await this.media.insertImage(buffer, newExt);
+      xml = xml.replace(/r:embed="[^"]+"/, `r:embed="${relId}"`);
+    }
+
+    if (opts?.widthPx && opts?.heightPx && opts.widthPx > 0 && opts.heightPx > 0) {
+      xml = rescaleDrawingExtent(xml, opts.widthPx, opts.heightPx);
+    }
+
+    if (xml !== block.xml) {
+      blocks[index].xml = xml;
+      await this.document.saveBlocks(blocks);
+    }
+  }
+}
+
+// Rescale a drawing's display box to a new aspect ratio, preserving each extent's
+// current display WIDTH (cx) and recomputing its height (cy) from wPx/hPx. Rewrites
+// both the inline `<wp:extent>` and the picture shape's `<a:ext>` (they carry the
+// same EMU size for an inline image). Leaves `<a:off>` (x/y offsets) untouched.
+function rescaleDrawingExtent(xml: string, wPx: number, hPx: number): string {
+  const ratio = hPx / wPx;
+  return xml.replace(
+    /(<(?:wp:extent|a:ext)\b[^>]*\bcx=")(\d+)("[^>]*\bcy=")(\d+)(")/g,
+    (_m, pre, cx, mid, _cy, post) => `${pre}${cx}${mid}${Math.round(Number(cx) * ratio)}${post}`,
+  );
 }
 
 export {

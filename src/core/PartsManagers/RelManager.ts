@@ -79,4 +79,38 @@ export class RelManager {
     }
     return `${prefix}${max + 1}`;
   }
+
+  /**
+   * Read all relationships from the .rels part as a typed list. Empty when the
+   * part is missing.
+   */
+  async getRelationships(): Promise<RelationshipEntry[]> {
+    const relsObj = await this.readRels();
+    const raw = relsObj?.Relationships?.Relationship;
+    const arr = raw ? (Array.isArray(raw) ? raw : [raw]) : [];
+    return arr
+      .map((r: any) => ({
+        id: r?.$?.Id ?? "",
+        type: r?.$?.Type ?? "",
+        target: r?.$?.Target ?? "",
+        targetMode: r?.$?.TargetMode as string | undefined,
+      }))
+      .filter((r: RelationshipEntry) => r.id);
+  }
+
+  /** Resolve a relationship id to its `Target` (e.g. "media/image1.png"), or null. */
+  async getTarget(relId: string): Promise<string | null> {
+    const rel = (await this.getRelationships()).find((r) => r.id === relId);
+    return rel ? rel.target : null;
+  }
+}
+
+/** One entry from a `.rels` part. */
+export interface RelationshipEntry {
+  id: string;
+  type: string;
+  /** Target path, usually relative to the part's folder (e.g. "media/image1.png"). */
+  target: string;
+  /** "External" for hyperlinks/external targets; undefined for internal parts. */
+  targetMode?: string;
 }

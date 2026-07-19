@@ -165,6 +165,10 @@ export interface RunProperties {
       "w:val": string;
     };
   };
+  "w:rtl"?: {}; // Right-to-left run marker
+  "w:sz"?: { $: { "w:val": string } }; // Font size (half-points)
+  "w:szCs"?: { $: { "w:val": string } }; // Complex-script font size (half-points)
+  "w:color"?: { $: { "w:val": string } }; // Text colour (hex, no '#')
 }
 
 /**
@@ -205,6 +209,11 @@ interface ParagraphProperties {
     // Specific properties for line and paragraph spacing.
   };
   "w:jc"?: {
+    $: {
+      "w:val": string;
+    };
+  };
+  "w:outlineLvl"?: {
     $: {
       "w:val": string;
     };

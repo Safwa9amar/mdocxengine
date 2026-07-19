@@ -373,6 +373,60 @@ export function makeParagraphNode(text: string, styleId?: string, rtl?: boolean)
   return { kind: "paragraph", tag: "w:p", xml: makeParagraphXml(text, styleId, rtl) };
 }
 
+/** Options for {@link makeStyledParagraphXml} — a fully-formatted single-run paragraph. */
+export interface StyledParagraphOptions {
+  styleId?: string;
+  alignment?: "left" | "center" | "right" | "both";
+  outlineLevel?: number;
+  bold?: boolean;
+  italic?: boolean;
+  /** Font size in POINTS (emitted as half-points). */
+  fontSizePt?: number;
+  fontFamily?: string;
+  /** Hex colour, with or without leading '#'. */
+  color?: string;
+  /** Right-to-left: emits paragraph `<w:bidi/>` and run `<w:rtl/>`. */
+  rtl?: boolean;
+}
+
+/**
+ * Build a fully-formatted single-run `<w:p>` XML STRING (byte-safe for the
+ * OrderedBody block path — unlike `Paragraph.toXml()`, which wraps in `<root>`).
+ * `<w:pPr>`/`<w:rPr>` children are emitted in canonical OOXML order. Empty `text`
+ * yields a property-only spacer paragraph.
+ */
+export function makeStyledParagraphXml(text: string, opts: StyledParagraphOptions = {}): string {
+  const pPrParts: string[] = [];
+  if (opts.styleId) pPrParts.push(`<w:pStyle w:val="${escapeXmlText(opts.styleId)}"/>`);
+  if (opts.alignment) pPrParts.push(`<w:jc w:val="${opts.alignment}"/>`);
+  if (opts.outlineLevel !== undefined) pPrParts.push(`<w:outlineLvl w:val="${opts.outlineLevel}"/>`);
+  if (opts.rtl) pPrParts.push(`<w:bidi/>`);
+  const pPr = pPrParts.length ? `<w:pPr>${pPrParts.join("")}</w:pPr>` : "";
+
+  const rPrParts: string[] = [];
+  if (opts.fontFamily) {
+    const f = escapeXmlText(opts.fontFamily);
+    rPrParts.push(`<w:rFonts w:ascii="${f}" w:hAnsi="${f}" w:cs="${f}"/>`);
+  }
+  if (opts.bold) rPrParts.push(`<w:b/>`);
+  if (opts.italic) rPrParts.push(`<w:i/>`);
+  if (opts.fontSizePt) {
+    const hp = opts.fontSizePt * 2;
+    rPrParts.push(`<w:sz w:val="${hp}"/><w:szCs w:val="${hp}"/>`);
+  }
+  if (opts.color) rPrParts.push(`<w:color w:val="${escapeXmlText(opts.color.replace("#", ""))}"/>`);
+  if (opts.rtl) rPrParts.push(`<w:rtl/>`);
+  const rPr = rPrParts.length ? `<w:rPr>${rPrParts.join("")}</w:rPr>` : "";
+
+  const run = text ? `<w:r>${rPr}<w:t xml:space="preserve">${escapeXmlText(text)}</w:t></w:r>` : "";
+  return `<w:p>${pPr}${run}</w:p>`;
+}
+
+/** Build a fully-formatted paragraph `BodyBlock` (string-based, byte-safe). */
+export function makeStyledParagraphNode(text: string, opts: StyledParagraphOptions = {}): BodyBlock {
+  return { kind: "paragraph", tag: "w:p", xml: makeStyledParagraphXml(text, opts) };
+}
+
 // ─── Table construction ──────────────────────────────────────────────────────
 
 /**
@@ -397,44 +451,16 @@ export function makeTableXml(
   const headerRow = opts?.headerRow ?? false;
   const rtl = opts?.rtl ?? false;
 
-  const cols = Math.max(1, ...rows.map((r) => r.length));
-
-  // A cell with a single (optionally bold) run; the run text is passed via the
-  // xml2js charkey `_` so the serializer escapes it.
-  const mkCell = (text: string, bold: boolean) => {
-    const rPr = bold ? { "w:rPr": { "w:b": {} } } : {};
-    return {
-      "w:p": {
-        "w:r": {
-          ...rPr,
-          "w:t": { _: stripInvalidXmlChars(text ?? ""), $: { "xml:space": "preserve" } },
-        },
-      },
-    };
-  };
-
-  const mkRow = (cells: string[], bold: boolean) => ({
-    "w:tc": Array.from({ length: cols }, (_, c) => mkCell(cells[c] ?? "", bold)),
+  // Strip XML-illegal control chars from cell text (the AI-insertion path can
+  // carry them); then delegate to the shared Table.fromGrid builder so the
+  // produced table is byte-identical to a natively built one.
+  const sanitized = rows.map((r) => r.map((c) => stripInvalidXmlChars(c ?? "")));
+  const t = Table.fromGrid(sanitized, {
+    headerRow,
+    boldHeader: headerRow,
+    headerFill: "D9D9D9",
+    rtl,
   });
-
-  const tableObj: any = {
-    "w:tblPr": {},
-    "w:tblGrid": { "w:gridCol": Array.from({ length: cols }, () => ({})) },
-    "w:tr": rows.map((r, i) => mkRow(r, headerRow && i === 0)),
-  };
-
-  const t = new Table(tableObj);
-  t.setTableBorders({
-    top: { style: "single", size: 4, color: "808080" },
-    bottom: { style: "single", size: 4, color: "808080" },
-    left: { style: "single", size: 4, color: "808080" },
-    right: { style: "single", size: 4, color: "808080" },
-    insideH: { style: "single", size: 2, color: "BFBFBF" },
-    insideV: { style: "single", size: 2, color: "BFBFBF" },
-  });
-  t.setTableWidth(100, "pct");
-  if (rtl) t.setTableDirection(true);
-  if (headerRow && rows.length > 0) t.setHeaderRow(0, "D9D9D9");
 
   // Serialize compactly (no pretty whitespace) for parity with the string model.
   return XmlUtils.buildXml(t.toObject(), {
@@ -562,6 +588,85 @@ export function paragraphText(xml: string): string {
 export function paragraphStyleId(xml: string): string | null {
   const m = /<w:pStyle\b[^>]*\bw:val="([^"]*)"/.exec(xml);
   return m ? decodeXmlText(m[1]) : null;
+}
+
+/**
+ * Map a paragraph style id to a heading level 1–6 (0 = not a heading). Tolerant
+ * of the style-id variants real .docx files carry: English `Heading N` / `Title`,
+ * French `Titre N`, and separators ("Heading 1", "heading-1"). Returns 0 for any
+ * non-heading style or null.
+ */
+export function headingLevelFromStyleId(styleId: string | null): number {
+  if (!styleId) return 0;
+  const s = styleId.toLowerCase().replace(/[\s_-]/g, "");
+  if (s === "title") return 1;
+  const m = /^(?:heading|titre)([1-6])$/.exec(s);
+  return m ? Number(m[1]) : 0;
+}
+
+/**
+ * Read a paragraph's own outline level (`<w:outlineLvl w:val="N"/>`, 0-based) and
+ * return it as a 1-based heading level (N+1), or 0 if absent / out of range.
+ * Catches headings whose paragraph carries an outline level without a heading
+ * STYLE — common in imported documents.
+ */
+export function paragraphOutlineLevel(xml: string): number {
+  const m = /<w:outlineLvl\b[^>]*\bw:val="(\d+)"/.exec(xml);
+  if (!m) return 0;
+  const n = Number(m[1]);
+  return n >= 0 && n <= 5 ? n + 1 : 0;
+}
+
+/**
+ * The heading level (1–6) of a paragraph block, 0 if it is not a heading.
+ * Prefers the paragraph style (`headingLevelFromStyleId`); falls back to the
+ * paragraph's own outline level — so both Word-authored and imported headings are
+ * recognised.
+ */
+export function paragraphHeadingLevel(xml: string): number {
+  return headingLevelFromStyleId(paragraphStyleId(xml)) || paragraphOutlineLevel(xml);
+}
+
+/** The paragraph's alignment (`w:jc` value: left/center/right/both/…), or null. */
+export function paragraphAlignment(xml: string): string | null {
+  const m = /<w:jc\b[^>]*\bw:val="([^"]+)"/.exec(xml);
+  return m ? m[1] : null;
+}
+
+/**
+ * The paragraph's font size in POINTS, read from the first `<w:sz>`/`<w:szCs>`
+ * (which store half-points), or null if none is set inline. Useful as a
+ * "larger than body" signal when inferring untyped headings.
+ */
+export function paragraphFontSizePt(xml: string): number | null {
+  const m = /<w:sz(?:Cs)?\b[^>]*\bw:val="(\d+)"/.exec(xml);
+  return m ? Number(m[1]) / 2 : null;
+}
+
+const RUN_RE = /<w:r\b[^>]*>[\s\S]*?<\/w:r>/g;
+/** True if a run's properties enable bold (`<w:b/>`/`<w:bCs/>`, not val="0/false/off"). */
+function runIsBold(runXml: string): boolean {
+  const m = /<w:b(?:Cs)?\b([^>]*?)\/?>/.exec(runXml);
+  if (!m) return false;
+  const val = /\bw:val="([^"]*)"/.exec(m[1] || "");
+  return !(val && /^(0|false|off)$/i.test(val[1]));
+}
+
+/**
+ * True when the paragraph's text is entirely bold — i.e. every text-bearing run
+ * is bold. A common signal for an untyped (plain-style) title. Returns false for
+ * paragraphs with no text.
+ */
+export function paragraphIsBold(xml: string): boolean {
+  const runs = xml.match(RUN_RE) || [];
+  let textRuns = 0;
+  let boldRuns = 0;
+  for (const r of runs) {
+    if (!/<w:t[\s>/]/.test(r)) continue; // only runs that carry text
+    textRuns++;
+    if (runIsBold(r)) boldRuns++;
+  }
+  return textRuns > 0 && boldRuns === textRuns;
 }
 
 // ─── Paragraph text replacement (run-preserving where it matters) ────────────

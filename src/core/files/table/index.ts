@@ -1,4 +1,5 @@
 import { TableObject, TableRow, TableCell, CellMargins } from "./types";
+import { parseXml } from "@/utils/xmlUtils";
 
 export interface CellTextOptions {
   bold?: boolean;
@@ -23,6 +24,31 @@ export interface TableBorderOptions {
   insideH?: BorderSide;
   insideV?: BorderSide;
 }
+
+export interface FromGridOptions {
+  /** Mark row 0 as a repeating header row (`w:tblHeader`). */
+  headerRow?: boolean;
+  /** Bold the header row's text (default false; only relevant with `headerRow`). */
+  boldHeader?: boolean;
+  /** Shade the header row with this hex fill (e.g. "D9D9D9"); omit for none. */
+  headerFill?: string;
+  /** Right-to-left table direction (`w:bidiVisual`). */
+  rtl?: boolean;
+  /** Table width as a percentage of page width (default 100). */
+  widthPct?: number;
+  /** Border set; defaults to a light grey single-line grid. Pass to override. */
+  borders?: TableBorderOptions;
+}
+
+/** Default light-grey single-line border set used by {@link Table.fromGrid}. */
+const DEFAULT_GRID_BORDERS: TableBorderOptions = {
+  top: { style: "single", size: 4, color: "808080" },
+  bottom: { style: "single", size: 4, color: "808080" },
+  left: { style: "single", size: 4, color: "808080" },
+  right: { style: "single", size: 4, color: "808080" },
+  insideH: { style: "single", size: 2, color: "BFBFBF" },
+  insideV: { style: "single", size: 2, color: "BFBFBF" },
+};
 
 /**
  * Wraps a parsed <w:tbl> and provides a full Table Design + Layout API.
@@ -133,6 +159,17 @@ export class Table {
     const cell = this.getCell(row, col);
     if (!cell) return "";
     return this.extractCellText(cell);
+  }
+
+  /**
+   * Plain text of every cell as a row-major grid (`string[][]`). Ragged rows are
+   * kept as-is (each row reflects its own cell count). Cell text is the joined
+   * run text; intra-cell paragraph breaks become "\n".
+   */
+  public getAllCellText(): string[][] {
+    return this.getRows().map((row) =>
+      this.getCells(row).map((cell) => this.extractCellText(cell)),
+    );
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -678,5 +715,65 @@ export class Table {
   /** Raw table object for serialisation. */
   public toObject(): TableObject {
     return this.table;
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // FACTORY
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Build a styled `Table` from a grid of cell texts. The widest row determines
+   * the column count; short rows are padded with empty cells. By default the
+   * table gets a light-grey single-line border grid and 100% width.
+   *
+   * Replaces the hand-rolled `buildTable(header, rows, rtl)` helpers used by
+   * document builders, and backs the string-level `makeTableXml` in OrderedBody.
+   */
+  /**
+   * Parse a `<w:tbl>…</w:tbl>` XML string into a `Table`. Useful for reading a
+   * table out of an OrderedBody block (`block.xml`) without the xml2js
+   * full-document path — e.g. `(await Table.fromXml(block.xml)).getAllCellText()`.
+   */
+  public static async fromXml(tableXml: string): Promise<Table> {
+    const parsed = await parseXml(tableXml);
+    // parseXml wraps the element under its root key ("w:tbl"); unwrap to the
+    // inner object the Table class expects ({ "w:tblPr", "w:tblGrid", "w:tr" }).
+    const inner =
+      parsed && typeof parsed === "object" && "w:tbl" in parsed
+        ? (parsed as Record<string, unknown>)["w:tbl"]
+        : parsed;
+    return new Table(inner as TableObject);
+  }
+
+  public static fromGrid(rows: string[][], opts: FromGridOptions = {}): Table {
+    const headerRow = opts.headerRow ?? false;
+    const boldHeader = opts.boldHeader ?? false;
+    const cols = Math.max(1, ...rows.map((r) => r.length));
+
+    const mkCell = (text: string, bold: boolean): TableCell => ({
+      "w:p": {
+        "w:r": {
+          ...(bold ? { "w:rPr": { "w:b": {} } } : {}),
+          "w:t": { _: text ?? "", $: { "xml:space": "preserve" } },
+        },
+      },
+    });
+
+    const mkRow = (cells: string[], bold: boolean): TableRow => ({
+      "w:tc": Array.from({ length: cols }, (_, c) => mkCell(cells[c] ?? "", bold)),
+    });
+
+    const tableObj: TableObject = {
+      "w:tblPr": {},
+      "w:tblGrid": { "w:gridCol": Array.from({ length: cols }, () => ({})) },
+      "w:tr": rows.map((r, i) => mkRow(r, boldHeader && headerRow && i === 0)),
+    } as unknown as TableObject;
+
+    const t = new Table(tableObj);
+    t.setTableBorders(opts.borders ?? DEFAULT_GRID_BORDERS);
+    t.setTableWidth(opts.widthPct ?? 100, "pct");
+    if (opts.rtl) t.setTableDirection(true);
+    if (headerRow && rows.length > 0) t.setHeaderRow(0, opts.headerFill);
+    return t;
   }
 }

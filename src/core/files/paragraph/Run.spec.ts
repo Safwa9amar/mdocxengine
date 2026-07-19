@@ -121,4 +121,22 @@ describe("Run", () => {
   test("constructor throws for falsy input", () => {
     expect(() => new Run(null as any)).toThrow();
   });
+
+  test("setRtl(true) marks the run right-to-left", () => {
+    const run = Run.fromText("مرحبا");
+    run.setRtl();
+    expect(run.isRtl()).toBe(true);
+    expect(run.getProperties()?.["w:rtl"]).toBeDefined();
+  });
+
+  test("setRtl(false) removes the rtl marker", () => {
+    const run = Run.fromText("hi");
+    run.setRtl(true);
+    run.setRtl(false);
+    expect(run.isRtl()).toBe(false);
+  });
+
+  test("isRtl() is false by default", () => {
+    expect(Run.fromText("plain").isRtl()).toBe(false);
+  });
 });

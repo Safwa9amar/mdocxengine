@@ -1,5 +1,31 @@
 import { Hyperlink, Paragraph as ParagraphInterface, Run as RunInterface, RunProperties } from "@/core/files/paragraph/types";
 import { Run } from "@/core/files/paragraph/Run";
+
+/**
+ * Options for {@link Paragraph.make} — a single-run, formatted paragraph factory.
+ * Mirrors the hand-rolled `new Paragraph({...})` + applyStyle + setAlignment +
+ * addRun(Run.fromText().setBold()...) pattern that document builders repeat.
+ */
+export interface ParagraphOptions {
+  /** Paragraph style id, e.g. "Heading1", "ListParagraph". */
+  styleId?: string;
+  /** Horizontal alignment (`w:jc`). */
+  alignment?: "left" | "center" | "right" | "both";
+  /** Outline level (`w:outlineLvl`, 0-based) — drives TOC depth for headings. */
+  outlineLevel?: number;
+  /** Bold the run. */
+  bold?: boolean;
+  /** Italicise the run. */
+  italic?: boolean;
+  /** Font size in POINTS (converted to half-points internally). */
+  fontSizePt?: number;
+  /** Font family (applied to both ascii/hAnsi and complex-script). */
+  fontFamily?: string;
+  /** Text colour (hex, with or without leading '#'). */
+  color?: string;
+  /** Mark the run right-to-left (`<w:rtl/>`) for Arabic / Hebrew shaping. */
+  rtl?: boolean;
+}
 import { extractParaIds } from "@/helpers";
 import { parseXml } from "@/utils/xmlUtils";
 import AdmZip from "adm-zip";
@@ -370,6 +396,40 @@ class Paragraph {
     // Merge with existing runs
     this.paragraph["w:r"] = [...(this.paragraph["w:r"] || []), ...plainRuns];
     this.paragraph["w:hyperlink"] = [];
+  }
+
+  /**
+   * Build a single-run, formatted paragraph from plain text + options.
+   *
+   * The `<w:pPr>` children are emitted in canonical CT_PPr order
+   * (pStyle → jc → outlineLvl) so the result is schema-valid regardless of which
+   * options are passed. Empty `text` yields a property-only (spacer) paragraph
+   * with no run.
+   *
+   * Replaces the repeated `new Paragraph({ $: {}, "w:pPr": {}, "w:r": [] })`
+   * boilerplate used across document builders.
+   */
+  public static make(text: string, opts: ParagraphOptions = {}): Paragraph {
+    const pPr: Record<string, unknown> = {};
+    if (opts.styleId) pPr["w:pStyle"] = { $: { "w:val": opts.styleId } };
+    if (opts.alignment) pPr["w:jc"] = { $: { "w:val": opts.alignment } };
+    if (opts.outlineLevel !== undefined)
+      pPr["w:outlineLvl"] = { $: { "w:val": String(opts.outlineLevel) } };
+
+    const paragraph = new Paragraph({ $: {}, "w:pPr": pPr, "w:r": [] } as unknown as ParagraphInterface);
+
+    if (text) {
+      const run = Run.fromText(text);
+      if (opts.bold) run.setBold();
+      if (opts.italic) run.setItalic();
+      if (opts.fontSizePt) run.setFontSize(opts.fontSizePt * 2);
+      if (opts.fontFamily) run.setFontFamily(opts.fontFamily, opts.fontFamily);
+      if (opts.color) run.setColor(opts.color);
+      if (opts.rtl) run.setRtl();
+      paragraph.addRun(run);
+    }
+
+    return paragraph;
   }
 
   /**

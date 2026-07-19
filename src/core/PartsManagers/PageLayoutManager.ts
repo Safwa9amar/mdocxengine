@@ -311,11 +311,11 @@ export class PageLayoutManager {
         "w:r": [{ "w:br": { $: { "w:type": "column" } } }],
       };
     } else {
-      // Section break: <w:sectPr> inside <w:pPr>
-      const sectPrEl: any = {};
-      if (type !== "nextPage") {
-        sectPrEl["w:type"] = { $: { "w:val": type } };
-      }
+      // Section break: <w:sectPr> inside <w:pPr>. Always emit <w:type> — even for
+      // the "nextPage" default — so the <w:sectPr> is non-empty. An empty
+      // <w:sectPr/> round-trips to "" through xml2js, making the section invisible
+      // to getSections() (so per-section headers/footers can't be attached).
+      const sectPrEl: any = { "w:type": { $: { "w:val": type } } };
       breakPara = {
         $: {},
         "w:pPr": { "w:sectPr": sectPrEl },

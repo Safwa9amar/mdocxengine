@@ -9,6 +9,8 @@ export declare interface AppendOptions {
     styleMap?: Record<string, string>;
 }
 
+export declare function applyBodyPageLayout(documentXml: string, opts: BodyPageLayoutOpts): string;
+
 export declare interface AppProperties {
     application?: string;
     pages?: number;
@@ -16,7 +18,29 @@ export declare interface AppProperties {
     characters?: number;
 }
 
+/** One body block as plain data. */
+export declare interface BlockInfo {
+    index: number;
+    kind: "paragraph" | "table" | "image" | "other";
+    /** Visible text (paragraph/cell text); "" for images. */
+    text: string;
+    /** Paragraph style id, if any. */
+    styleId: string | null;
+    /** Heading level 1–6, or 0 if not a heading. */
+    headingLevel: number;
+}
+
 export declare type BlockKind = "paragraph" | "table" | "sectPr" | "other";
+
+/**
+ * Caller hook to render a block the engine handles differently (or not at all).
+ * Returns paragraphs to append plus optional table/image inserts whose
+ * `afterParaCount` is LOCAL to the returned paragraphs (0 = before the first).
+ * The engine rebases those offsets onto the running paragraph count. Return
+ * `undefined` (or omit the hook) to fall back to the engine's built-in
+ * rendering for that block.
+ */
+export declare type BlockRenderer = (block: MarkdownBlock, ctx: MarkdownRenderCtx) => RenderedChunk | undefined;
 
 /**
  * A single ordered body child, stored as its exact original XML substring.
@@ -29,17 +53,26 @@ export declare interface BodyBlock {
     xml: string;
 }
 
+export declare interface BodyPageLayoutOpts {
+    marginPreset?: MarginPreset;
+    orientation?: Orientation;
+    pageSizePreset?: PageSizePreset;
+    columns?: number;
+}
+
 export declare interface BookmarkEntry {
     id: number;
     name: string;
     text: string;
 }
 
-declare interface BorderSide {
+export declare interface BorderSide {
     style?: string;
     size?: number;
     color?: string;
 }
+
+declare type BreakType = "nextPage" | "evenPage" | "oddPage";
 
 /** Reassemble from a SplitDocument (or its parts). */
 export declare function buildOrderedDoc(split: SplitDocument): string;
@@ -378,6 +411,222 @@ export declare class CrossReferenceManager {
  */
 export declare const DEFAULT_STYLE_ALIASES: Record<string, string>;
 
+/** A body block enriched with formatting signals — for inferring structure or AI labelling. */
+export declare interface DetailedBlockInfo extends BlockInfo {
+    /** Whole line is bold. */
+    bold: boolean;
+    /** Inline font size in points, or null if set via styles. */
+    fontSizePt: number | null;
+    /** Alignment (`center`, `right`, …) or null. */
+    alignment: string | null;
+    wordCount: number;
+    /** Text looks like a figure/table caption (so NOT a heading). */
+    looksLikeCaption: boolean;
+}
+
+export declare class Doc {
+    /** Escape hatch: the underlying engine + all its managers. */
+    readonly engine: Mdocxengine;
+    private constructor();
+    /** Open a document from a file path or an in-memory buffer. */
+    static open(source: string | Buffer): Promise<Doc>;
+    /** Wrap an already-loaded engine. */
+    static from(engine: Mdocxengine): Doc;
+    /** Whole-document plain text (blocks joined by `separator`, default newline). */
+    text(separator?: string): Promise<string>;
+    /** Total word count of the body. */
+    wordCount(): Promise<number>;
+    /** Every body block as plain data, in document order. */
+    blocks(): Promise<BlockInfo[]>;
+    private toBlockInfo;
+    /** The heading outline as a nested tree (like a table of contents). */
+    outline(): Promise<OutlineNode[]>;
+    /** Every table as a plain text grid. */
+    tables(): Promise<TableInfo[]>;
+    /** Every embedded inline image as bytes + size + mime. */
+    images(): Promise<ImageInfo[]>;
+    /**
+     * Every body block enriched with formatting signals (bold, font size,
+     * alignment, word count, caption flag). The raw material for inferring
+     * structure when a document has no heading markup — feed it to a heuristic
+     * (`inferOutline`) or to an LLM to label headings.
+     */
+    blocksDetailed(captionPatterns?: RegExp[]): Promise<DetailedBlockInfo[]>;
+    /**
+     * Infer a heading outline for documents whose titles are plain text (no
+     * heading styles) — the common case for imported / copy-pasted theses.
+     *
+     * Real headings (styled or with an outline level) are reported as
+     * `confidence: "styled"`. The rest are inferred from text patterns
+     * (`^الفصل`, `^المبحث`…), section keywords (`تمهيد`, `قائمة المراجع`…), and
+     * formatting (bold / larger-than-body font / centered + short line), while
+     * figure/table captions are excluded. All rules are overridable.
+     *
+     * This is a best-effort heuristic; for messy documents, pass
+     * `blocksDetailed()` to an LLM and call `setHeadingLevel()` with its labels.
+     */
+    inferOutline(opts?: InferOutlineOptions): Promise<InferredHeading[]>;
+    /** Append a paragraph (or insert at `at`). */
+    addParagraph(text: string, opts?: ParagraphFormat, at?: number): Promise<this>;
+    /** Append a heading at `level` (1–6) → maps to `Heading{level}`, bold, with outline level. */
+    addHeading(text: string, level?: number, opts?: ParagraphFormat, at?: number): Promise<this>;
+    /** Replace the text of the paragraph at `index` (preserves its formatting). */
+    editParagraph(index: number, text: string): Promise<this>;
+    /**
+     * Promote (or demote) the paragraph at `index` to a real heading at `level`
+     * (1–6): applies the `Heading{level}` style + matching outline level, keeping
+     * the text and preserving RTL/alignment. This is how you turn a plain-text
+     * title — e.g. one found by `inferOutline()` or labelled by an LLM — into a
+     * structural heading the outline/TOC can see.
+     */
+    setHeadingLevel(index: number, level: number): Promise<this>;
+    /** Delete the block at `index`. */
+    deleteBlock(index: number): Promise<this>;
+    /** Append a table from a row-major grid (or insert at `at`). */
+    addTable(rows: string[][], opts?: {
+        header?: boolean;
+        rtl?: boolean;
+    }, at?: number): Promise<this>;
+    /** Set the text of one cell of the table at block `index`. */
+    editTableCell(index: number, row: number, col: number, value: string): Promise<this>;
+    /** Append an image from bytes (or insert at `at`). Size in pixels @96dpi. */
+    addImage(bytes: Buffer, opts?: {
+        format?: string;
+        width?: number;
+        height?: number;
+        at?: number;
+    }): Promise<this>;
+    /** Render Markdown and append the result (headings, paragraphs, lists, tables). */
+    addMarkdown(blocks: BodyBlock[], at?: number): Promise<this>;
+    /** Find-and-replace across the document body (e.g. fill `{{tokens}}`). */
+    replaceText(find: string | RegExp, replace: string): Promise<this>;
+    setPageSize(preset: "A4" | "USLetter" | "Legal" | "A3" | "A5", orientation?: "portrait" | "landscape"): Promise<this>;
+    setMargins(margins: {
+        top?: number;
+        right?: number;
+        bottom?: number;
+        left?: number;
+    }): Promise<this>;
+    setOrientation(orientation: "portrait" | "landscape"): Promise<this>;
+    /** Page numbers in the footer (centered decimal by default). */
+    addPageNumbers(opts?: {
+        alignment?: "left" | "center" | "right";
+        format?: "decimal" | "lowerRoman" | "upperRoman";
+    }): Promise<this>;
+    /** Roman front-matter / arabic body footers, split at `bodyStartIndex`. */
+    frontMatterNumbering(bodyStartIndex: number): Promise<this>;
+    /**
+     * Set ONE document-wide page header (top of every page). Empty text removes it.
+     * Replaces any existing header (no duplicates) and clears per-section headers.
+     */
+    setHeader(text: string): Promise<this>;
+    /**
+     * Set ONE document-wide page footer (text and/or page numbers). Empty text +
+     * `pageNumbers:false` removes it. Replaces any existing footer and clears
+     * per-section footers.
+     */
+    setFooter(opts?: FooterOptions): Promise<this>;
+    /**
+     * Make the block at `blockIndex` begin on a new page by inserting a section
+     * break just before it (so e.g. each chapter starts a fresh page and can own
+     * its header/footer). Returns `{ changed:false }` if the block is already the
+     * first content. Block index ↔ paragraph index is handled internally.
+     */
+    startOnNewPage(blockIndex: number, breakType?: BreakType): Promise<{
+        changed: boolean;
+    }>;
+    /**
+     * Give the section CONTAINING the block at `blockIndex` its own running header
+     * (call `startOnNewPage` on that heading first to make it its own section).
+     * Empty text → a blank header for that section. Cleans up the section's
+     * previous distinct header part.
+     */
+    setSectionHeader(blockIndex: number, text: string): Promise<SectionEditResult>;
+    /**
+     * Give the section CONTAINING the block at `blockIndex` its own footer (text
+     * and/or page numbers). Cleans up the section's previous distinct footer part.
+     */
+    setSectionFooter(blockIndex: number, opts?: FooterOptions): Promise<SectionEditResult>;
+    /** Map a block index → its owning section (+ the full section list). */
+    private resolveSection;
+    /**
+     * Per-section header/footer info, read-only companion to setSectionHeader /
+     * setSectionFooter. Inheritance is resolved the way Word renders it
+     * (ECMA-376): a section without its own reference uses the previous
+     * section's part; a first section without one has none.
+     *
+     * @param preloadedBlocks Pass blocks you already fetched from
+     *   `engine.document.getBlocks()` to avoid a second body parse; they must be
+     *   CURRENT for this document state.
+     */
+    sections(preloadedBlocks?: BodyBlock[]): Promise<SectionInfo[]>;
+    /**
+     * Content of the DEFAULT-type header/footer part behind `refs` (first/even
+     * page-only refs are not the running chrome and are ignored), memoized by
+     * relId in `cache` so sections sharing a part read it once per
+     * {@link sections} call. null when no part resolves — including on any
+     * read/parse failure, so chrome extraction can never throw.
+     */
+    private readHeaderFooterPart;
+    /** Best-effort delete of a header/footer part by its relationship id (cleanup). */
+    private removeHeaderFooterByRel;
+    /** A generated, always-accurate structural map of the document. */
+    describe(): Promise<DocMap>;
+    /** The structural map rendered as human-readable Markdown. */
+    toMarkdownMap(): Promise<string>;
+    /** Write the document to a file. */
+    save(outputPath: string): Promise<void>;
+    /** Get the document as an in-memory buffer. */
+    toBuffer(): Buffer;
+}
+
+/** A generated, always-accurate structural map of the document. */
+export declare interface DocMap {
+    title: string;
+    wordCount: number;
+    counts: {
+        paragraphs: number;
+        headings: number;
+        tables: number;
+        images: number;
+        sections: number;
+    };
+    page: {
+        width: number;
+        height: number;
+        orientation: string;
+    };
+    margins: {
+        top: number;
+        right: number;
+        bottom: number;
+        left: number;
+    };
+    hasHeader: boolean;
+    hasFooter: boolean;
+    rtl: boolean;
+    outline: OutlineNode[];
+}
+
+/**
+ * A document-wide formatting profile. Every field is optional; only the
+ * provided ones are applied. Mirrors the kind of "norm profile" a university
+ * imposes (font, size, line spacing, margins) and is applied uniformly across
+ * the body via direct OOXML rewriting.
+ */
+export declare interface DocumentFormatting {
+    /** Font family applied to ascii/hAnsi/cs of every `<w:rFonts>`. */
+    font?: string;
+    /** Font size in POINTS (written as half-points to `<w:sz>`/`<w:szCs>`). */
+    fontSizePt?: number;
+    /** Line spacing as a multiplier (1, 1.5, 2 → `<w:spacing w:line>` 240ths). */
+    lineSpacing?: number;
+    /** Page margins (cm). */
+    margins?: DocumentMargins;
+    /** Which side the binding is on — decides whether `binding`/`opposite` map to left/right. Default "left". */
+    bindingSide?: "left" | "right";
+}
+
 export declare class DocumentManager {
     zip: default_2;
     constructor(zip: default_2);
@@ -436,6 +685,14 @@ export declare class DocumentManager {
      */
     getBlocks(): Promise<BodyBlock[]>;
     /**
+     * Plain text of the whole document body: every block's visible text, joined by
+     * the given separator (default newline). Blank/whitespace-only blocks are
+     * dropped. Useful for word counts, search indexing, or AI classification.
+     */
+    getPlainText(separator?: string): Promise<string>;
+    /** Total word count of the document body (whitespace-delimited). */
+    getWordCount(): Promise<number>;
+    /**
      * Replaces the body's editable children with `blocks` (in order), preserving
      * the existing trailing w:sectPr exactly, and writes document.xml. Callers
      * pass only the editable blocks; the sectPr is re-appended automatically.
@@ -455,9 +712,43 @@ export declare class DocumentManager {
     insertBlockAt(block: BodyBlock, index: number): Promise<void>;
     /** Removes the editable block at `index`. */
     deleteBlockAt(index: number): Promise<void>;
+    /**
+     * Set the paragraph style at block `index`, preserving order + runs.
+     * "Normal" demotes to body (drops w:pStyle + w:outlineLvl). "Heading{n}"
+     * sets the style AND w:outlineLvl = n-1 so the outline/TOC detects it.
+     */
+    setBlockStyle(index: number, styleId: string): Promise<void>;
+    /** Set paragraph alignment at block `index`, preserving order + runs. */
+    setBlockAlignment(index: number, alignment: "left" | "center" | "right" | "both"): Promise<void>;
+    /**
+     * Set paragraph text direction at block `index` via <w:bidi>, preserving order
+     * + runs. "rtl" → <w:bidi/> (right-to-left); "ltr" → <w:bidi w:val="0"/> (an
+     * explicit left-to-right marker, so it overrides an RTL style default).
+     */
+    setBlockDirection(index: number, direction: "rtl" | "ltr"): Promise<void>;
+    /** Strip run-level formatting (bold/italic/font) at block `index`; keeps text. */
+    clearBlockFormatting(index: number): Promise<void>;
+    /**
+     * Move the block at `from` to position `to`, preserving every block's bytes.
+     * Pure array reorder over the ordered block model — the moved block and all
+     * others keep their exact XML; only their sequence changes.
+     */
+    moveBlock(from: number, to: number): Promise<void>;
     private _writeBody;
     private _getBody;
     private _writeDoc;
+}
+
+/** Page margins in centimetres, expressed relative to the binding. */
+export declare interface DocumentMargins {
+    /** Top margin (cm). */
+    top: number;
+    /** Bottom margin (cm). */
+    bottom: number;
+    /** Inner margin on the binding side (cm) — the gutter side. */
+    binding: number;
+    /** Outer margin on the side opposite the binding (cm). */
+    opposite: number;
 }
 
 /**
@@ -477,6 +768,12 @@ declare interface Drawing {
 export declare const EMU_PER_CM = 360000;
 
 export declare const EMU_PER_INCH = 914400;
+
+/** EMU per pixel at 96 DPI (1 px = 9525 EMU). */
+export declare const EMU_PER_PIXEL = 9525;
+
+/** Convert EMU to whole pixels at 96 DPI. */
+export declare const emuToPixels: (emu: number) => number;
 
 export declare interface EndnoteEntry {
     id: number;
@@ -614,6 +911,17 @@ export declare class FooterManager {
     private removeFooterReferenceFromDocument;
 }
 
+/** Footer options (text and/or page numbers) for {@link Doc.setFooter}/{@link Doc.setSectionFooter}. */
+export declare interface FooterOptions {
+    text?: string;
+    pageNumbers?: boolean;
+    alignment?: "left" | "center" | "right";
+    /** Text before the page number, e.g. "Page ". */
+    prefix?: string;
+    /** Render "current / total" (e.g. "3 / 40"). */
+    includeTotalPages?: boolean;
+}
+
 declare type FooterType = "default" | "first" | "even";
 
 export declare interface FootnoteEntry {
@@ -668,6 +976,70 @@ export declare class FootnoteManager {
      */
     createFootnoteRun(footnoteId: number): Run_2;
     private extractText;
+}
+
+/**
+ * Applies a {@link DocumentFormatting} profile uniformly across the document body
+ * by direct OOXML rewriting — font, font size, line spacing and page margins.
+ * A coarse but deterministic "normalise the whole document" pass, distinct from
+ * per-paragraph or style-based formatting.
+ */
+export declare class FormattingManager {
+    private zip;
+    constructor(zip: ZipManager);
+    /**
+     * Apply the profile to `word/document.xml` in place. Returns which transforms
+     * ran. Only fields present on `formatting` are attempted.
+     */
+    apply(formatting: DocumentFormatting): FormattingResult;
+    /**
+     * Pure transform: apply the profile to a `document.xml` string and return the
+     * rewritten XML plus the applied/skipped breakdown. Useful when you already
+     * hold the part bytes (e.g. a freshly merged buffer) and want to avoid a
+     * second load.
+     */
+    static applyToXml(documentXml: string, formatting: DocumentFormatting): {
+        xml: string;
+        result: FormattingResult;
+    };
+}
+
+/** Which transforms ran (`applied`) vs. failed (`skipped`). */
+export declare interface FormattingResult {
+    applied: string[];
+    skipped: string[];
+}
+
+export declare interface FromGridOptions {
+    /** Mark row 0 as a repeating header row (`w:tblHeader`). */
+    headerRow?: boolean;
+    /** Bold the header row's text (default false; only relevant with `headerRow`). */
+    boldHeader?: boolean;
+    /** Shade the header row with this hex fill (e.g. "D9D9D9"); omit for none. */
+    headerFill?: string;
+    /** Right-to-left table direction (`w:bidiVisual`). */
+    rtl?: boolean;
+    /** Table width as a percentage of page width (default 100). */
+    widthPct?: number;
+    /** Border set; defaults to a light grey single-line grid. Pass to override. */
+    borders?: TableBorderOptions;
+}
+
+/** Options for {@link Mdocxengine.applyFrontMatterNumbering}. */
+export declare interface FrontMatterNumberingOptions {
+    /**
+     * Paragraph index where the body begins. A `nextPage` section break is
+     * inserted here, splitting the document into front-matter and body sections.
+     */
+    bodyStartParaIndex: number;
+    /** Front-matter page-number format (default "lowerRoman" → i, ii, iii…). */
+    frontMatterFormat?: PageNumberFormat;
+    /** Body page-number format (default "decimal" → 1, 2, 3…). */
+    bodyFormat?: PageNumberFormat;
+    /** Footer alignment for both sections (default "center"). */
+    alignment?: "left" | "center" | "right";
+    /** Page number the body restarts at (default 1). */
+    bodyStartAt?: number;
 }
 
 export declare class HeaderManager {
@@ -749,6 +1121,20 @@ export declare class HeaderManager {
 declare type HeaderType = "default" | "first" | "even";
 
 /**
+ * Map a paragraph style id to a heading level 1–6 (0 = not a heading). Tolerant
+ * of the style-id variants real .docx files carry: English `Heading N` / `Title`,
+ * French `Titre N`, and separators ("Heading 1", "heading-1"). Returns 0 for any
+ * non-heading style or null.
+ */
+export declare function headingLevelFromStyleId(styleId: string | null): number;
+
+/** A regex → heading-level rule used by {@link Doc.inferOutline}. */
+export declare interface HeadingPattern {
+    re: RegExp;
+    level: number;
+}
+
+/**
  * Interface for a hyperlink element that contains one or more runs.
  * It's a container for text that serves as a link to another part of the document or an external URL.
  * @example
@@ -774,8 +1160,59 @@ export declare interface ImageEntry {
     buffer: Buffer;
 }
 
+/** An embedded image as plain data. */
+export declare interface ImageInfo extends InlineImage {
+    index: number;
+}
+
 /** Convert inches to twips */
 export declare const inchesToTwips: (inches: number) => number;
+
+/** Tuning for {@link Doc.inferOutline}; all fields have sensible Arabic-academic defaults. */
+export declare interface InferOutlineOptions {
+    /** Text patterns that mark a heading at a given level (e.g. `^الفصل` → 1). */
+    headingPatterns?: HeadingPattern[];
+    /** Keywords that mark a top-level (level-1) section (e.g. `قائمة المراجع`). */
+    level1Keywords?: string[];
+    /** Keywords that mark a level-2 section (e.g. `تمهيد`). */
+    sectionKeywords?: string[];
+    /** Patterns that mark a caption (excluded from headings). */
+    captionPatterns?: RegExp[];
+    /** Max word count for a line to be considered a (format-based) heading. Default 14. */
+    maxHeadingWords?: number;
+}
+
+/** A heading detected by {@link Doc.inferOutline}. */
+export declare interface InferredHeading {
+    index: number;
+    level: number;
+    title: string;
+    /** `styled` = real heading markup; `high`/`medium` = inferred from text/format. */
+    confidence: "styled" | "high" | "medium";
+    reason: string;
+}
+
+/** An inline image resolved from a paragraph block's `<w:drawing>`. */
+export declare interface InlineImage {
+    /** The `r:embed` relationship id. */
+    relId: string;
+    /** The resolved relationship target (e.g. "media/image1.png"). */
+    target: string;
+    /** The raw image bytes. */
+    bytes: Buffer;
+    /** File extension without dot (e.g. "png"). */
+    extension: string;
+    /** MIME type for the extension (e.g. "image/png"). */
+    mime: string;
+    /** Inline display width in EMU (0 if no `<wp:extent>`). */
+    widthEmu: number;
+    /** Inline display height in EMU (0 if no `<wp:extent>`). */
+    heightEmu: number;
+    /** Inline display width in pixels @96dpi. */
+    widthPx: number;
+    /** Inline display height in pixels @96dpi. */
+    heightPx: number;
+}
 
 export declare interface InsertLineOptions {
     color?: string;
@@ -843,6 +1280,17 @@ export declare function makeParagraphNode(text: string, styleId?: string, rtl?: 
  */
 export declare function makeParagraphXml(text: string, styleId?: string, rtl?: boolean): string;
 
+/** Build a fully-formatted paragraph `BodyBlock` (string-based, byte-safe). */
+export declare function makeStyledParagraphNode(text: string, opts?: StyledParagraphOptions): BodyBlock;
+
+/**
+ * Build a fully-formatted single-run `<w:p>` XML STRING (byte-safe for the
+ * OrderedBody block path — unlike `Paragraph.toXml()`, which wraps in `<root>`).
+ * `<w:pPr>`/`<w:rPr>` children are emitted in canonical OOXML order. Empty `text`
+ * yields a property-only spacer paragraph.
+ */
+export declare function makeStyledParagraphXml(text: string, opts?: StyledParagraphOptions): string;
+
 /** Build a table `BodyBlock` from a grid of cell texts. */
 export declare function makeTableNode(rows: string[][], opts?: {
     headerRow?: boolean;
@@ -873,6 +1321,44 @@ export declare const MARGIN_PRESETS: Record<MarginPreset, PageMargins>;
 
 export declare type MarginPreset = "normal" | "narrow" | "moderate" | "wide" | "mirrored";
 
+export declare type MarkdownAlign = "left" | "center" | "right" | "both";
+
+export declare type MarkdownBlock = {
+    kind: "heading";
+    level: 1 | 2 | 3 | 4 | 5 | 6;
+    text: string;
+} | {
+    kind: "paragraph";
+    text: string;
+} | {
+    kind: "list";
+    ordered: boolean;
+    items: string[];
+} | {
+    kind: "table";
+    header: string[];
+    rows: string[][];
+} | {
+    kind: "quote";
+    text: string;
+} | {
+    kind: "code";
+    lang: string;
+    text: string;
+};
+
+export declare interface MarkdownRenderCtx {
+    /** Body alignment for paragraphs/lists/headings. */
+    align: MarkdownAlign;
+    /** Right-to-left tables (and a hint for caller hooks). */
+    rtl: boolean;
+    /**
+     * Word heading level a top-level markdown `#` maps to (default 2). Use 3 to
+     * reserve Heading1/Heading2 for an outer structure (e.g. Partie/Chapitre).
+     */
+    headingBase?: 2 | 3;
+}
+
 export declare class Mdocxengine {
     zip: ZipManager;
     rels: RelManager;
@@ -897,10 +1383,49 @@ export declare class Mdocxengine {
     sections: SectionManager;
     shapes: ShapeManager;
     merge: MergeManager;
+    formatting: FormattingManager;
     private constructor();
     static loadFromFile(path: string): Promise<Mdocxengine>;
     static loadFromBuffer(buffer: Buffer): Promise<Mdocxengine>;
     saveToFile(outputPath: string): Promise<void>;
+    /**
+     * Apply the canonical thesis/report footer scheme: front-matter pages numbered
+     * in one format (default lowercase roman — i, ii, iii…) and the body restarted
+     * in another (default decimal — 1, 2, 3…), each centered in the footer.
+     *
+     * Splits the document into two sections with a `nextPage` break at
+     * `bodyStartParaIndex`, attaches a distinct footer (with a page-number field)
+     * to each section, and restarts the body numbering. A composition over the
+     * PageLayout / Footer / Section managers — no new OOXML logic.
+     */
+    applyFrontMatterNumbering(options: FrontMatterNumberingOptions): Promise<void>;
+    /**
+     * Replace the image embedded in the figure block at editable `index` with new
+     * bytes — the engine-level primitive behind the app's crop / rotate / replace /
+     * remove-background tools. Composes MediaManager (bytes, rels, content-types)
+     * and DocumentManager (block XML) so callers never touch OOXML.
+     *
+     * Byte swap:
+     *  • Same extension as the current image → overwrite the media part in place
+     *    (relationship + inline reference untouched).
+     *  • Different extension (e.g. jpeg → transparent PNG for background removal) →
+     *    register a NEW media part + content-type + relationship and repoint the
+     *    block's `r:embed` to it. The superseded part is left orphaned (Word ignores
+     *    unreferenced media); we don't delete it because another block may share it.
+     *
+     * Optional `opts.widthPx`/`heightPx` are the NEW intrinsic pixel size. When the
+     * aspect ratio changed (crop, rotate ±90°, replace) the drawing's display box is
+     * rescaled to keep the current display WIDTH and apply the new ratio, so the
+     * image isn't stretched. Omit them (or pass the same ratio) to leave the box as-is.
+     *
+     * @param index   Editable block index (matches DocumentManager.getBlocks order).
+     * @param buffer  New image bytes.
+     * @param ext     New image extension without dot ("png", "jpeg", "jpg", "gif").
+     */
+    replaceImageAtBlock(index: number, buffer: Buffer, ext: string, opts?: {
+        widthPx?: number;
+        heightPx?: number;
+    }): Promise<void>;
 }
 
 export declare class MediaManager {
@@ -916,6 +1441,25 @@ export declare class MediaManager {
      * Returns the buffer for a specific image by filename (e.g. "image1.png"), or null.
      */
     extractImage(name: string): Buffer | null;
+    /**
+     * Resolve a relationship id (e.g. an image's `r:embed`) to its bytes via the
+     * document relationships. Returns null if the rel or the target part is missing.
+     */
+    getImageByRelId(relId: string): Promise<Buffer | null>;
+    /**
+     * Read a media part by its relationship `Target` (e.g. "media/image1.png").
+     * Targets are relative to `word/` unless already absolute/prefixed.
+     */
+    private readByTarget;
+    /**
+     * Extract the inline image embedded in a paragraph/run XML string (a block that
+     * carries `<w:drawing>` with `<a:blip r:embed="…">`). Resolves the relationship
+     * to the media bytes and reads the inline display size from `<wp:extent>`.
+     * Returns null when the block has no inline image or it can't be resolved.
+     *
+     * Replaces hand-rolled `r:embed` + rels + `wp:extent` regex on the caller side.
+     */
+    extractInlineImage(blockXml: string): Promise<InlineImage | null>;
     /**
      * Inserts a new image into the document.
      * @param imageBuffer  Raw image bytes.
@@ -1064,6 +1608,14 @@ export declare class NumberingManager {
 
 export declare type Orientation = "portrait" | "landscape";
 
+/** A node in the heading outline tree. */
+export declare interface OutlineNode {
+    index: number;
+    level: number;
+    title: string;
+    children: OutlineNode[];
+}
+
 export declare const PAGE_SIZES: Record<PageSizePreset, {
     w: number;
     h: number;
@@ -1158,7 +1710,7 @@ export declare interface PageMargins {
     footer?: number;
 }
 
-declare type PageNumberFormat = "decimal" | "upperRoman" | "lowerRoman" | "upperLetter" | "lowerLetter";
+export declare type PageNumberFormat = "decimal" | "upperRoman" | "lowerRoman" | "upperLetter" | "lowerLetter";
 
 declare type PageNumberFormat_2 = "decimal" | "upperRoman" | "lowerRoman" | "upperLetter" | "lowerLetter";
 
@@ -1362,6 +1914,18 @@ export declare class Paragraph {
      */
     removeHyperlinks(): void;
     /**
+     * Build a single-run, formatted paragraph from plain text + options.
+     *
+     * The `<w:pPr>` children are emitted in canonical CT_PPr order
+     * (pStyle → jc → outlineLvl) so the result is schema-valid regardless of which
+     * options are passed. Empty `text` yields a property-only (spacer) paragraph
+     * with no run.
+     *
+     * Replaces the repeated `new Paragraph({ $: {}, "w:pPr": {}, "w:r": [] })`
+     * boilerplate used across document builders.
+     */
+    static make(text: string, opts?: ParagraphOptions): Paragraph;
+    /**
      * Creates a Paragraph instance from an XML string.
      * @param xmlString The XML string of the paragraph.
      * @returns A Promise that resolves with the new Paragraph instance.
@@ -1442,6 +2006,70 @@ declare interface Paragraph_2 {
     "w:drawing"?: Drawing[];
 }
 
+/** The paragraph's alignment (`w:jc` value: left/center/right/both/…), or null. */
+export declare function paragraphAlignment(xml: string): string | null;
+
+/**
+ * The paragraph's font size in POINTS, read from the first `<w:sz>`/`<w:szCs>`
+ * (which store half-points), or null if none is set inline. Useful as a
+ * "larger than body" signal when inferring untyped headings.
+ */
+export declare function paragraphFontSizePt(xml: string): number | null;
+
+/** Options accepted by paragraph/heading verbs. */
+export declare type ParagraphFormat = Omit<StyledParagraphOptions, "outlineLevel" | "styleId"> & {
+    styleId?: string;
+};
+
+/**
+ * The heading level (1–6) of a paragraph block, 0 if it is not a heading.
+ * Prefers the paragraph style (`headingLevelFromStyleId`); falls back to the
+ * paragraph's own outline level — so both Word-authored and imported headings are
+ * recognised.
+ */
+export declare function paragraphHeadingLevel(xml: string): number;
+
+/**
+ * True when the paragraph's text is entirely bold — i.e. every text-bearing run
+ * is bold. A common signal for an untyped (plain-style) title. Returns false for
+ * paragraphs with no text.
+ */
+export declare function paragraphIsBold(xml: string): boolean;
+
+/**
+ * Options for {@link Paragraph.make} — a single-run, formatted paragraph factory.
+ * Mirrors the hand-rolled `new Paragraph({...})` + applyStyle + setAlignment +
+ * addRun(Run.fromText().setBold()...) pattern that document builders repeat.
+ */
+export declare interface ParagraphOptions {
+    /** Paragraph style id, e.g. "Heading1", "ListParagraph". */
+    styleId?: string;
+    /** Horizontal alignment (`w:jc`). */
+    alignment?: "left" | "center" | "right" | "both";
+    /** Outline level (`w:outlineLvl`, 0-based) — drives TOC depth for headings. */
+    outlineLevel?: number;
+    /** Bold the run. */
+    bold?: boolean;
+    /** Italicise the run. */
+    italic?: boolean;
+    /** Font size in POINTS (converted to half-points internally). */
+    fontSizePt?: number;
+    /** Font family (applied to both ascii/hAnsi and complex-script). */
+    fontFamily?: string;
+    /** Text colour (hex, with or without leading '#'). */
+    color?: string;
+    /** Mark the run right-to-left (`<w:rtl/>`) for Arabic / Hebrew shaping. */
+    rtl?: boolean;
+}
+
+/**
+ * Read a paragraph's own outline level (`<w:outlineLvl w:val="N"/>`, 0-based) and
+ * return it as a 1-based heading level (N+1), or 0 if absent / out of range.
+ * Catches headings whose paragraph carries an outline level without a heading
+ * STYLE — common in imported documents.
+ */
+export declare function paragraphOutlineLevel(xml: string): number;
+
 /**
  * Interface for the properties of a paragraph.
  * These properties apply to the entire paragraph, such as style, alignment, and spacing.
@@ -1455,6 +2083,11 @@ declare interface ParagraphProperties {
     "w:tabs"?: {};
     "w:spacing"?: {};
     "w:jc"?: {
+        $: {
+            "w:val": string;
+        };
+    };
+    "w:outlineLvl"?: {
         $: {
             "w:val": string;
         };
@@ -1492,10 +2125,23 @@ export declare function parseOrderedDoc(documentXml: string): {
     bodyChildren: BodyBlock[];
 };
 
+/** Convert pixels (96 DPI) to EMU. */
+export declare const pixelsToEmu: (px: number) => number;
+
 /** Raw parsed numbering parts (xml2js objects), for cross-document copy. */
 declare interface RawNumbering {
     abstractNums: any[];
     nums: any[];
+}
+
+/** One entry from a `.rels` part. */
+export declare interface RelationshipEntry {
+    id: string;
+    type: string;
+    /** Target path, usually relative to the part's folder (e.g. "media/image1.png"). */
+    target: string;
+    /** "External" for hyperlinks/external targets; undefined for internal parts. */
+    targetMode?: string;
 }
 
 export declare class RelManager {
@@ -1514,12 +2160,61 @@ export declare class RelManager {
      * Quick helper to generate a new rId (checks existing ones)
      */
     genId(prefix?: string): Promise<string>;
+    /**
+     * Read all relationships from the .rels part as a typed list. Empty when the
+     * part is missing.
+     */
+    getRelationships(): Promise<RelationshipEntry[]>;
+    /** Resolve a relationship id to its `Target` (e.g. "media/image1.png"), or null. */
+    getTarget(relId: string): Promise<string | null>;
 }
 
 declare enum RelsType {
     Root = "_rels/.rels",
     Document = "word/_rels/document.xml.rels"
 }
+
+/** A chunk a {@link BlockRenderer} hook may return; insert offsets are local. */
+export declare interface RenderedChunk {
+    paragraphs: Paragraph[];
+    tables?: RenderedTable[];
+    images?: RenderedImage[];
+}
+
+/** An inline image (PNG bytes + EMU dimensions) to embed after the Nth paragraph. */
+export declare interface RenderedImage {
+    afterParaCount: number;
+    png: Buffer;
+    widthEmu: number;
+    heightEmu: number;
+}
+
+/** Output of {@link renderMarkdownBlocks}. */
+export declare interface RenderedMarkdown {
+    paragraphs: Paragraph[];
+    tables: RenderedTable[];
+    images: RenderedImage[];
+}
+
+/** A `Table` to be inserted after the Nth rendered paragraph. */
+export declare interface RenderedTable {
+    afterParaCount: number;
+    table: Table;
+}
+
+/**
+ * Render markdown blocks into engine paragraphs + table/image inserts.
+ *
+ * Heading levels map to `Heading{N}` styles starting at `ctx.headingBase`
+ * (default 2): a markdown `#` → `Heading{base}`, `##` → `Heading{base+1}`, …
+ * capped at Heading6. Headings are bold with a matching `w:outlineLvl` so a TOC
+ * can be derived. Tables are recorded as inserts positioned after the paragraph
+ * count at the point they appear (the same contract the export pipeline uses).
+ *
+ * Pass `renderBlock` to intercept blocks (e.g. `code` blocks of a custom
+ * language); anything the hook does not claim is rendered by the engine.
+ */
+export declare function renderMarkdownBlocks(blocks: MarkdownBlock[], ctx: MarkdownRenderCtx, renderBlock?: BlockRenderer): RenderedMarkdown;
 
 export declare interface RevisionEntry {
     id: number;
@@ -1589,6 +2284,13 @@ export declare class Run {
      * Remove shading.
      */
     removeShading(): void;
+    /**
+     * Mark the run as right-to-left (`<w:rtl/>`) so Word shapes Arabic / Hebrew
+     * text correctly. Pass `false` to remove the marker.
+     */
+    setRtl(enable?: boolean): void;
+    /** Determine if the run is marked right-to-left. */
+    isRtl(): boolean;
     /**
      * Determine if the run is bold.
      */
@@ -1741,9 +2443,31 @@ declare interface RunProperties {
             "w:val": string;
         };
     };
+    "w:rtl"?: {};
+    "w:sz"?: {
+        $: {
+            "w:val": string;
+        };
+    };
+    "w:szCs"?: {
+        $: {
+            "w:val": string;
+        };
+    };
+    "w:color"?: {
+        $: {
+            "w:val": string;
+        };
+    };
 }
 
 export declare type SectionBreakType = "nextPage" | "continuous" | "evenPage" | "oddPage" | "nextColumn";
+
+/** Result of a section-scoped header/footer change. */
+export declare interface SectionEditResult {
+    sectionIndex: number;
+    totalSections: number;
+}
 
 export declare interface SectionEntry {
     index: number;
@@ -1753,12 +2477,44 @@ export declare interface SectionEntry {
     margins?: SectionMargins;
     headerRefs: SectionHeaderFooterRef[];
     footerRefs: SectionHeaderFooterRef[];
+    /** Parsed w:pgNumType, when the section sets one (page-number format/restart). */
+    pageNumberType?: {
+        format: string;
+        start?: number;
+    };
     paragraphIndex?: number;
 }
 
 export declare interface SectionHeaderFooterRef {
     relId: string;
     type: "default" | "first" | "even";
+}
+
+export declare interface SectionInfo {
+    /** Section position in document order (0-based; same order as getSections()). */
+    index: number;
+    /** Block index (document.getBlocks() order) of the section's first block. */
+    startBlockIndex: number;
+    /**
+     * Effective running header text — the section's own default part, else the
+     * previous section's (ECMA-376 inheritance). null = no header anywhere in
+     * the chain; "" = an explicitly blank header part.
+     */
+    headerText: string | null;
+    /** Effective footer text (same inheritance rules). */
+    footerText: string | null;
+    /** True when the effective footer part contains a PAGE field. */
+    footerHasPageNumbers: boolean;
+    /**
+     * Page-number format in w:pgNumType vocabulary ("decimal", "lowerRoman", …).
+     * The section's own w:pgNumType format wins when set; otherwise the format
+     * is derived from the effective footer's PAGE field `\*` switch (the normal
+     * insertion path writes only the switch), which travels with the inherited
+     * part. null when neither exists.
+     */
+    pageNumberFormat: string | null;
+    /** This section's own w:pgNumType start value, if set. */
+    pageNumberStart: number | null;
 }
 
 export declare interface SectionLayout {
@@ -1783,6 +2539,14 @@ export declare class SectionManager {
     setSectionLayout(sectionIndex: number, layout: SectionLayout): Promise<void>;
     setSectionHeader(sectionIndex: number, relId: string, type?: "default" | "first" | "even"): Promise<void>;
     setSectionFooter(sectionIndex: number, relId: string, type?: "default" | "first" | "even"): Promise<void>;
+    /**
+     * Apply `transform` to the `<w:sectPr>` of section `sectionIndex` — byte-safe
+     * string surgery. Intermediate sections live inside a paragraph's `<w:pPr>`;
+     * the final section is the body's `<w:sectPr>` (created if absent). Sections
+     * are counted in document order: paragraph-level sectPrs first, final last —
+     * the same order as getSections().
+     */
+    private editSectionSectPr;
 }
 
 export declare interface SectionMargins {
@@ -1880,6 +2644,25 @@ declare interface SplitDocument {
     post: string;
 }
 
+/** Strip the common inline markdown markers, leaving plain text. */
+export declare function stripInlineMarkdown(s: string): string;
+
+/** Options for {@link makeStyledParagraphXml} — a fully-formatted single-run paragraph. */
+export declare interface StyledParagraphOptions {
+    styleId?: string;
+    alignment?: "left" | "center" | "right" | "both";
+    outlineLevel?: number;
+    bold?: boolean;
+    italic?: boolean;
+    /** Font size in POINTS (emitted as half-points). */
+    fontSizePt?: number;
+    fontFamily?: string;
+    /** Hex colour, with or without leading '#'. */
+    color?: string;
+    /** Right-to-left: emits paragraph `<w:bidi/>` and run `<w:rtl/>`. */
+    rtl?: boolean;
+}
+
 export declare interface StyleEntry {
     id: string;
     name: string;
@@ -1934,6 +2717,12 @@ export declare class Table {
     getCell(row: number, col: number): TableCell | null;
     /** Plain text of cell [row, col]. */
     getCellText(row: number, col: number): string;
+    /**
+     * Plain text of every cell as a row-major grid (`string[][]`). Ragged rows are
+     * kept as-is (each row reflects its own cell count). Cell text is the joined
+     * run text; intra-cell paragraph breaks become "\n".
+     */
+    getAllCellText(): string[][];
     /** Apply a named Word table style, e.g. "TableGrid", "LightShading-Accent1". */
     setTableStyle(styleId: string): this;
     /**
@@ -2093,9 +2882,24 @@ export declare class Table {
     sortByColumn(colIndex: number, direction?: "asc" | "desc", hasHeaderRow?: boolean): this;
     /** Raw table object for serialisation. */
     toObject(): TableObject;
+    /**
+     * Build a styled `Table` from a grid of cell texts. The widest row determines
+     * the column count; short rows are padded with empty cells. By default the
+     * table gets a light-grey single-line border grid and 100% width.
+     *
+     * Replaces the hand-rolled `buildTable(header, rows, rtl)` helpers used by
+     * document builders, and backs the string-level `makeTableXml` in OrderedBody.
+     */
+    /**
+     * Parse a `<w:tbl>…</w:tbl>` XML string into a `Table`. Useful for reading a
+     * table out of an OrderedBody block (`block.xml`) without the xml2js
+     * full-document path — e.g. `(await Table.fromXml(block.xml)).getAllCellText()`.
+     */
+    static fromXml(tableXml: string): Promise<Table>;
+    static fromGrid(rows: string[][], opts?: FromGridOptions): Table;
 }
 
-declare interface TableBorderOptions {
+export declare interface TableBorderOptions {
     top?: BorderSide;
     bottom?: BorderSide;
     left?: BorderSide;
@@ -2141,6 +2945,12 @@ declare interface TableCellProperties {
         };
     } | string;
     [key: string]: any;
+}
+
+/** A table as a plain text grid. */
+export declare interface TableInfo {
+    index: number;
+    rows: string[][];
 }
 
 export declare interface TableObject {
@@ -2322,6 +3132,12 @@ export declare class ZipManager extends default_2 {
     constructor(filePathOrBuffer?: string | Buffer);
     static loadFromFile(filePath: string): Promise<ZipManager>;
     static loadFromBuffer(buffer: Buffer): Promise<ZipManager>;
+    /**
+     * Guarantee the convenience readers exist on a (possibly adm-zip-returned)
+     * instance. Idempotent: if they're already present (a real ZipManager), it's a
+     * no-op. See the constructor note on why this is necessary.
+     */
+    private static ensureReaders;
     getFileAsBuffer(entryName: string): Buffer | null;
     getFileAsString(entryName: string): string | null;
     fileExists(entryName: string): boolean;
