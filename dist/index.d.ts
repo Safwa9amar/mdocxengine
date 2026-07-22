@@ -489,6 +489,23 @@ export declare class Doc {
     }, at?: number): Promise<this>;
     /** Set the text of one cell of the table at block `index`. */
     editTableCell(index: number, row: number, col: number, value: string): Promise<this>;
+    private mutateTable;
+    /** Insert a row into the table at `index`: below row `at` (0-based), or appended when `at` is omitted. */
+    addTableRow(index: number, at?: number): Promise<this>;
+    /** Remove row `row` (0-based) from the table at `index`. */
+    removeTableRow(index: number, row: number): Promise<this>;
+    /** Insert a column into the table at `index`: to the right of column `at` (0-based), or appended when omitted. */
+    insertTableColumn(index: number, at?: number): Promise<this>;
+    /** Delete column `col` (0-based) from the table at `index`. */
+    deleteTableColumn(index: number, col: number): Promise<this>;
+    /** Table-level layout: alignment, RTL/LTR direction, header row (row 0), single-line borders on/off. */
+    setTableLayout(index: number, opts: {
+        alignment?: "left" | "center" | "right";
+        direction?: "rtl" | "ltr";
+        headerRow?: boolean;
+        headerFill?: string;
+        borders?: boolean;
+    }): Promise<this>;
     /** Append an image from bytes (or insert at `at`). Size in pixels @96dpi. */
     addImage(bytes: Buffer, opts?: {
         format?: string;

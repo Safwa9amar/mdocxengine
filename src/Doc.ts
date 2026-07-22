@@ -610,17 +610,66 @@ export class Doc {
 
   /** Set the text of one cell of the table at block `index`. */
   async editTableCell(index: number, row: number, col: number, value: string): Promise<this> {
+    return this.mutateTable(index, (t) => t.setCellText(row, col, value));
+  }
+
+  // Shared load→mutate→save round-trip for the table at `index` (mirrors the old
+  // editTableCell inline body). ANY Table mutation preserves per-cell formatting
+  // because it edits the parsed TableObject, then re-serializes the whole <w:tbl>.
+  private async mutateTable(index: number, fn: (t: Table) => void): Promise<this> {
     const blocks = await this.engine.document.getBlocks();
     const block = blocks[index];
     if (!block || block.kind !== "table") throw new Error(`No table at block index ${index}`);
     const table = await Table.fromXml(block.xml);
-    table.setCellText(row, col, value);
+    fn(table);
     blocks[index] = {
       ...block,
       xml: XmlUtils.buildXml(table.toObject(), { rootName: "w:tbl", headless: true, pretty: false }),
     };
     await this.engine.document.saveBlocks(blocks);
     return this;
+  }
+
+  /** Insert a row into the table at `index`: below row `at` (0-based), or appended when `at` is omitted. */
+  async addTableRow(index: number, at?: number): Promise<this> {
+    return this.mutateTable(index, (t) => {
+      if (at != null && at >= 0 && at < t.getRowCount()) t.insertRowBelow(at);
+      else t.addRow();
+    });
+  }
+
+  /** Remove row `row` (0-based) from the table at `index`. */
+  async removeTableRow(index: number, row: number): Promise<this> {
+    return this.mutateTable(index, (t) => t.removeRow(row));
+  }
+
+  /** Insert a column into the table at `index`: to the right of column `at` (0-based), or appended when omitted. */
+  async insertTableColumn(index: number, at?: number): Promise<this> {
+    return this.mutateTable(index, (t) => {
+      const cols = t.getColumnCount();
+      t.insertColumnRight(at != null && at >= 0 && at < cols ? at : Math.max(0, cols - 1));
+    });
+  }
+
+  /** Delete column `col` (0-based) from the table at `index`. */
+  async deleteTableColumn(index: number, col: number): Promise<this> {
+    return this.mutateTable(index, (t) => t.deleteColumn(col));
+  }
+
+  /** Table-level layout: alignment, RTL/LTR direction, header row (row 0), single-line borders on/off. */
+  async setTableLayout(
+    index: number,
+    opts: { alignment?: "left" | "center" | "right"; direction?: "rtl" | "ltr"; headerRow?: boolean; headerFill?: string; borders?: boolean },
+  ): Promise<this> {
+    return this.mutateTable(index, (t) => {
+      if (opts.alignment) t.setTableAlignment(opts.alignment);
+      if (opts.direction) t.setTableDirection(opts.direction === "rtl");
+      if (opts.headerRow) t.setHeaderRow(0, opts.headerFill);
+      if (opts.borders != null) {
+        const side = opts.borders ? { style: "single", size: 4 } : { style: "none" };
+        t.setTableBorders({ top: side, bottom: side, left: side, right: side, insideH: side, insideV: side });
+      }
+    });
   }
 
   /** Append an image from bytes (or insert at `at`). Size in pixels @96dpi. */
