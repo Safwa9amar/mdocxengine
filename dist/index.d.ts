@@ -490,22 +490,127 @@ export declare class Doc {
     /** Set the text of one cell of the table at block `index`. */
     editTableCell(index: number, row: number, col: number, value: string): Promise<this>;
     private mutateTable;
-    /** Insert a row into the table at `index`: below row `at` (0-based), or appended when `at` is omitted. */
-    addTableRow(index: number, at?: number): Promise<this>;
+    /**
+     * Insert a row into the table at `index`: below row `at` (0-based), ABOVE it
+     * when `before` is true (e.g. a new first row: at=0, before=true), or
+     * appended when `at` is omitted.
+     */
+    addTableRow(index: number, at?: number, before?: boolean): Promise<this>;
     /** Remove row `row` (0-based) from the table at `index`. */
     removeTableRow(index: number, row: number): Promise<this>;
-    /** Insert a column into the table at `index`: to the right of column `at` (0-based), or appended when omitted. */
-    insertTableColumn(index: number, at?: number): Promise<this>;
+    /**
+     * Insert a column into the table at `index`: to the right of column `at`
+     * (0-based), to its LEFT when `before` is true (e.g. a new first column:
+     * at=0, before=true), or appended when omitted.
+     */
+    insertTableColumn(index: number, at?: number, before?: boolean): Promise<this>;
+    /** Sort the table's data rows by column `col` (numeric when both parse). Header row 0 stays put unless includeHeader. */
+    sortTable(index: number, col: number, opts?: {
+        desc?: boolean;
+        includeHeader?: boolean;
+    }): Promise<this>;
+    /**
+     * Column/table widths: `columnsTwips[i]` sets column i's preferred width
+     * (1440 twips = 1 inch; ~600 per cm); `autofit` switches the layout mode.
+     */
+    setTableWidths(index: number, opts: {
+        columnsTwips?: number[];
+        autofit?: "contents" | "window";
+    }): Promise<this>;
+    /**
+     * Format a cell (row+col) or a whole row (row only, col omitted) — existing
+     * text preserved: bold/italic, font size (points), font family, vertical
+     * alignment inside the cell, uniform cell padding (twips).
+     */
+    formatTableCellText(index: number, opts: {
+        row?: number;
+        col?: number;
+        bold?: boolean;
+        italic?: boolean;
+        sizePt?: number;
+        fontFamily?: string;
+        vAlign?: "top" | "center" | "bottom";
+        paddingTwips?: number;
+    }): Promise<this>;
+    /** Merge cells: horizontal (row + startCol..endCol) or vertical (col + startRow..endRow). */
+    mergeTableCells(index: number, opts: {
+        direction: "horizontal";
+        row: number;
+        start: number;
+        end: number;
+    } | {
+        direction: "vertical";
+        col: number;
+        start: number;
+        end: number;
+    }): Promise<this>;
     /** Delete column `col` (0-based) from the table at `index`. */
     deleteTableColumn(index: number, col: number): Promise<this>;
-    /** Table-level layout: alignment, RTL/LTR direction, header row (row 0), single-line borders on/off. */
+    /**
+     * Table-level layout + styling. All fields optional — pass what changes:
+     * alignment/direction/header (row 0) as before; `borders` true/false for
+     * simple single/none, or `{ style?, sizePt?, color?, sides? }` for custom
+     * borders (sides defaults to all six); `widthPct` (10..100) sets the table
+     * width as a page percentage; `indentTwips` indents from the margin;
+     * `wrap` lets body text flow around the table; `styleId` applies a named
+     * Word table style (must exist in the doc's styles.xml); `rowHeightTwips`
+     * (+ optional `row`, default all rows) sets row height; `distributeRows` /
+     * `distributeColumns` even out sizes; `allowRowBreaks` toggles rows
+     * splitting across pages; `altTitle`/`altDescription` set accessibility
+     * alt text.
+     */
     setTableLayout(index: number, opts: {
         alignment?: "left" | "center" | "right";
         direction?: "rtl" | "ltr";
         headerRow?: boolean;
         headerFill?: string;
-        borders?: boolean;
+        borders?: boolean | {
+            style?: string;
+            sizePt?: number;
+            color?: string;
+            sides?: ("top" | "bottom" | "left" | "right" | "insideH" | "insideV")[];
+        };
+        widthPct?: number;
+        indentTwips?: number;
+        wrap?: "none" | "around";
+        styleId?: string;
+        rowHeightTwips?: number;
+        row?: number;
+        distributeRows?: boolean;
+        distributeColumns?: boolean;
+        allowRowBreaks?: boolean;
+        altTitle?: string;
+        altDescription?: string;
     }): Promise<this>;
+    /** Split a merged cell back apart: horizontal (gridSpan) or vertical (vMerge chain). */
+    splitTableCells(index: number, opts: {
+        direction: "horizontal" | "vertical";
+        row: number;
+        col: number;
+    }): Promise<this>;
+    /** Move a row or a column from one position to another (0-based). */
+    moveTableLine(index: number, opts: {
+        kind: "row" | "column";
+        from: number;
+        to: number;
+    }): Promise<this>;
+    /**
+     * Style one cell (row+col), a whole row (row only), or the header row
+     * (neither): `fill` = 6-hex background, `textColor` = 6-hex font colour of
+     * the existing text. Pass either or both.
+     */
+    shadeTable(index: number, opts: {
+        row?: number;
+        col?: number;
+        fill?: string;
+        textColor?: string;
+    }): Promise<this>;
+    /**
+     * Apply styling grids: fills[r][c] = 6-hex background, textColors[r][c] =
+     * 6-hex font colour for that cell's existing text; null/undefined = leave
+     * as-is. Either grid may be omitted.
+     */
+    shadeTableCells(index: number, fills?: (string | null | undefined)[][] | null, textColors?: (string | null | undefined)[][] | null): Promise<this>;
     /** Append an image from bytes (or insert at `at`). Size in pixels @96dpi. */
     addImage(bytes: Buffer, opts?: {
         format?: string;
@@ -2833,6 +2938,41 @@ export declare class Table {
     setCellMargins(row: number, col: number, margins: CellMargins): this;
     /** Set cell background shading colour. */
     setCellShading(row: number, col: number, fillColor: string): this;
+    /**
+     * Format a cell's EXISTING text (every run in every paragraph), preserving
+     * the content — unlike setCellContent, which replaces it. Pass only the
+     * properties you want to change. sizeHalfPoints: Word half-points (24 = 12pt).
+     */
+    setCellTextFormat(row: number, col: number, opts: {
+        bold?: boolean;
+        italic?: boolean;
+        sizeHalfPoints?: number;
+        fontFamily?: string;
+    }): this;
+    /** Grid column of the tc at [row, col] (cumulative gridSpans of preceding cells). */
+    private gridColOf;
+    /**
+     * SPLIT a horizontally merged cell back into single cells: removes its
+     * gridSpan and inserts the missing empty cells after it. Reverse of
+     * mergeCellsHorizontal (the merged text stays in the first cell).
+     */
+    splitCellHorizontal(row: number, col: number): this;
+    /**
+     * SPLIT a vertically merged cell: removes vMerge from the restart cell at
+     * [row, col] and from its continuation cells below (matched by GRID column).
+     * Reverse of mergeCellsVertical (the merged text stays in the top cell).
+     */
+    splitCellVertical(row: number, col: number): this;
+    /** Move row `from` to position `to` (both 0-based). */
+    moveRow(from: number, to: number): this;
+    /** Move column `from` to position `to` (both 0-based, tc-indexed). */
+    moveColumn(from: number, to: number): this;
+    /**
+     * Set the font colour of a cell's EXISTING text (every run in every
+     * paragraph), preserving the content — unlike setCellContent, which replaces
+     * it. 6-hex colour, with or without '#'.
+     */
+    setCellTextColor(row: number, col: number, color: string): this;
     /** Set text with rich formatting in a cell. */
     setCellContent(row: number, col: number, text: string, opts?: CellTextOptions): this;
     /** Set plain text in a cell. */
