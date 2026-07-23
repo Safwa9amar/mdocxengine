@@ -673,25 +673,42 @@ export class Doc {
     });
   }
 
-  /** Shade one cell (row+col), a whole row (row only), or the header row (neither). 6-hex fill, no '#'. */
-  async shadeTable(index: number, opts: { row?: number; col?: number; fill: string }): Promise<this> {
+  /**
+   * Style one cell (row+col), a whole row (row only), or the header row
+   * (neither): `fill` = 6-hex background, `textColor` = 6-hex font colour of
+   * the existing text. Pass either or both.
+   */
+  async shadeTable(index: number, opts: { row?: number; col?: number; fill?: string; textColor?: string }): Promise<this> {
     return this.mutateTable(index, (t) => {
       const row = opts.row ?? 0;
-      if (opts.col != null) t.setCellShading(row, opts.col, opts.fill);
-      else t.setRowShading(row, opts.fill);
+      const cols = t.getColumnCount();
+      const targets = opts.col != null ? [opts.col] : Array.from({ length: cols }, (_, c) => c);
+      for (const c of targets) {
+        if (opts.fill) t.setCellShading(row, c, opts.fill.replace("#", ""));
+        if (opts.textColor) t.setCellTextColor(row, c, opts.textColor);
+      }
     });
   }
 
-  /** Apply a shading grid: fills[r][c] = 6-hex fill for that cell, null/undefined = leave as-is. */
-  async shadeTableCells(index: number, fills: (string | null | undefined)[][]): Promise<this> {
+  /**
+   * Apply styling grids: fills[r][c] = 6-hex background, textColors[r][c] =
+   * 6-hex font colour for that cell's existing text; null/undefined = leave
+   * as-is. Either grid may be omitted.
+   */
+  async shadeTableCells(
+    index: number,
+    fills?: (string | null | undefined)[][] | null,
+    textColors?: (string | null | undefined)[][] | null,
+  ): Promise<this> {
     return this.mutateTable(index, (t) => {
       const rows = t.getRowCount();
       const cols = t.getColumnCount();
-      for (let r = 0; r < Math.min(fills.length, rows); r++) {
-        const rowFills = fills[r] ?? [];
-        for (let c = 0; c < Math.min(rowFills.length, cols); c++) {
-          const fill = rowFills[c];
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const fill = fills?.[r]?.[c];
           if (fill) t.setCellShading(r, c, fill.replace("#", ""));
+          const tc = textColors?.[r]?.[c];
+          if (tc) t.setCellTextColor(r, c, tc);
         }
       }
     });

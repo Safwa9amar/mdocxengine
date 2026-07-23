@@ -444,6 +444,31 @@ export class Table {
     return this;
   }
 
+  /**
+   * Set the font colour of a cell's EXISTING text (every run in every
+   * paragraph), preserving the content — unlike setCellContent, which replaces
+   * it. 6-hex colour, with or without '#'.
+   */
+  public setCellTextColor(row: number, col: number, color: string): this {
+    const cell = this.getCell(row, col);
+    if (!cell) throw new Error(`Cell [${row},${col}] not found`);
+    const val = color.replace("#", "");
+    const paragraphs = cell["w:p"];
+    if (!paragraphs) return this;
+    const arr = Array.isArray(paragraphs) ? paragraphs : [paragraphs];
+    for (const p of arr as any[]) {
+      const runs = p?.["w:r"];
+      if (!runs) continue;
+      const runArr = Array.isArray(runs) ? runs : [runs];
+      for (const r of runArr) {
+        if (!r || typeof r !== "object") continue;
+        const rPr = (r["w:rPr"] ??= {});
+        rPr["w:color"] = { $: { "w:val": val } };
+      }
+    }
+    return this;
+  }
+
   /** Set text with rich formatting in a cell. */
   public setCellContent(
     row: number,
