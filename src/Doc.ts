@@ -687,16 +687,43 @@ export class Doc {
     });
   }
 
-  /** Bold/italic a cell (row+col), a whole row (row only, col omitted) — existing text preserved. */
+  /**
+   * Format a cell (row+col) or a whole row (row only, col omitted) — existing
+   * text preserved: bold/italic, font size (points), font family, vertical
+   * alignment inside the cell, uniform cell padding (twips).
+   */
   async formatTableCellText(
     index: number,
-    opts: { row?: number; col?: number; bold?: boolean; italic?: boolean },
+    opts: {
+      row?: number;
+      col?: number;
+      bold?: boolean;
+      italic?: boolean;
+      sizePt?: number;
+      fontFamily?: string;
+      vAlign?: "top" | "center" | "bottom";
+      paddingTwips?: number;
+    },
   ): Promise<this> {
     return this.mutateTable(index, (t) => {
       const row = opts.row ?? 0;
       const cols = t.getColumnCount();
       const targets = opts.col != null ? [opts.col] : Array.from({ length: cols }, (_, c) => c);
-      for (const c of targets) t.setCellTextFormat(row, c, { bold: opts.bold, italic: opts.italic });
+      for (const c of targets) {
+        if (opts.bold !== undefined || opts.italic !== undefined || opts.sizePt !== undefined || opts.fontFamily !== undefined) {
+          t.setCellTextFormat(row, c, {
+            bold: opts.bold,
+            italic: opts.italic,
+            sizeHalfPoints: opts.sizePt != null ? Math.round(opts.sizePt * 2) : undefined,
+            fontFamily: opts.fontFamily,
+          });
+        }
+        if (opts.vAlign) t.setCellVerticalAlignment(row, c, opts.vAlign);
+        if (opts.paddingTwips != null) {
+          const p = Math.round(opts.paddingTwips);
+          t.setCellMargins(row, c, { top: p, bottom: p, left: p, right: p });
+        }
+      }
     });
   }
 
@@ -718,10 +745,39 @@ export class Doc {
     return this.mutateTable(index, (t) => t.deleteColumn(col));
   }
 
-  /** Table-level layout: alignment, RTL/LTR direction, header row (row 0), single-line borders on/off. */
+  /**
+   * Table-level layout + styling. All fields optional — pass what changes:
+   * alignment/direction/header (row 0) as before; `borders` true/false for
+   * simple single/none, or `{ style?, sizePt?, color?, sides? }` for custom
+   * borders (sides defaults to all six); `widthPct` (10..100) sets the table
+   * width as a page percentage; `indentTwips` indents from the margin;
+   * `wrap` lets body text flow around the table; `styleId` applies a named
+   * Word table style (must exist in the doc's styles.xml); `rowHeightTwips`
+   * (+ optional `row`, default all rows) sets row height; `distributeRows` /
+   * `distributeColumns` even out sizes; `allowRowBreaks` toggles rows
+   * splitting across pages; `altTitle`/`altDescription` set accessibility
+   * alt text.
+   */
   async setTableLayout(
     index: number,
-    opts: { alignment?: "left" | "center" | "right"; direction?: "rtl" | "ltr"; headerRow?: boolean; headerFill?: string; borders?: boolean },
+    opts: {
+      alignment?: "left" | "center" | "right";
+      direction?: "rtl" | "ltr";
+      headerRow?: boolean;
+      headerFill?: string;
+      borders?: boolean | { style?: string; sizePt?: number; color?: string; sides?: ("top" | "bottom" | "left" | "right" | "insideH" | "insideV")[] };
+      widthPct?: number;
+      indentTwips?: number;
+      wrap?: "none" | "around";
+      styleId?: string;
+      rowHeightTwips?: number;
+      row?: number;
+      distributeRows?: boolean;
+      distributeColumns?: boolean;
+      allowRowBreaks?: boolean;
+      altTitle?: string;
+      altDescription?: string;
+    },
   ): Promise<this> {
     return this.mutateTable(index, (t) => {
       if (opts.alignment) t.setTableAlignment(opts.alignment);
@@ -729,9 +785,53 @@ export class Doc {
       // headerFill alone also marks+shades row 0 (e.g. "make the header orange").
       if (opts.headerRow || opts.headerFill) t.setHeaderRow(0, opts.headerFill);
       if (opts.borders != null) {
-        const side = opts.borders ? { style: "single", size: 4 } : { style: "none" };
-        t.setTableBorders({ top: side, bottom: side, left: side, right: side, insideH: side, insideV: side });
+        if (typeof opts.borders === "boolean") {
+          const side = opts.borders ? { style: "single", size: 4 } : { style: "none" };
+          t.setTableBorders({ top: side, bottom: side, left: side, right: side, insideH: side, insideV: side });
+        } else {
+          const b = opts.borders;
+          const side = {
+            style: b.style ?? "single",
+            size: Math.max(2, Math.round((b.sizePt ?? 0.5) * 8)),
+            color: (b.color ?? "000000").replace("#", ""),
+          };
+          const sides = b.sides ?? ["top", "bottom", "left", "right", "insideH", "insideV"];
+          const all: Record<string, typeof side> = {};
+          for (const s of sides) all[s] = side;
+          t.setTableBorders(all);
+        }
       }
+      if (opts.widthPct != null) t.setTableWidth(Math.round(Math.max(10, Math.min(100, opts.widthPct)) * 50), "pct");
+      if (opts.indentTwips != null) t.setTableIndent(Math.round(opts.indentTwips));
+      if (opts.wrap) t.setTextWrapping(opts.wrap);
+      if (opts.styleId) t.setTableStyle(opts.styleId);
+      if (opts.rowHeightTwips != null) {
+        const rows = t.getRowCount();
+        const targets = opts.row != null ? [opts.row] : Array.from({ length: rows }, (_, r) => r);
+        for (const r of targets) t.setRowHeight(r, Math.round(opts.rowHeightTwips));
+      }
+      if (opts.distributeRows) t.distributeRows();
+      if (opts.distributeColumns) t.distributeColumns();
+      if (opts.allowRowBreaks != null) {
+        for (let r = 0; r < t.getRowCount(); r++) t.setRowAllowBreak(r, opts.allowRowBreaks);
+      }
+      if (opts.altTitle != null) t.setAltText(opts.altTitle, opts.altDescription ?? "");
+    });
+  }
+
+  /** Split a merged cell back apart: horizontal (gridSpan) or vertical (vMerge chain). */
+  async splitTableCells(index: number, opts: { direction: "horizontal" | "vertical"; row: number; col: number }): Promise<this> {
+    return this.mutateTable(index, (t) => {
+      if (opts.direction === "horizontal") t.splitCellHorizontal(opts.row, opts.col);
+      else t.splitCellVertical(opts.row, opts.col);
+    });
+  }
+
+  /** Move a row or a column from one position to another (0-based). */
+  async moveTableLine(index: number, opts: { kind: "row" | "column"; from: number; to: number }): Promise<this> {
+    return this.mutateTable(index, (t) => {
+      if (opts.kind === "row") t.moveRow(opts.from, opts.to);
+      else t.moveColumn(opts.from, opts.to);
     });
   }
 

@@ -445,11 +445,15 @@ export class Table {
   }
 
   /**
-   * Toggle bold/italic on a cell's EXISTING text (every run in every
-   * paragraph), preserving the content — unlike setCellContent, which
-   * replaces it. Pass only the flags you want to change.
+   * Format a cell's EXISTING text (every run in every paragraph), preserving
+   * the content — unlike setCellContent, which replaces it. Pass only the
+   * properties you want to change. sizeHalfPoints: Word half-points (24 = 12pt).
    */
-  public setCellTextFormat(row: number, col: number, opts: { bold?: boolean; italic?: boolean }): this {
+  public setCellTextFormat(
+    row: number,
+    col: number,
+    opts: { bold?: boolean; italic?: boolean; sizeHalfPoints?: number; fontFamily?: string },
+  ): this {
     const cell = this.getCell(row, col);
     if (!cell) throw new Error(`Cell [${row},${col}] not found`);
     const paragraphs = cell["w:p"];
@@ -470,8 +474,106 @@ export class Table {
           if (opts.italic) rPr["w:i"] = {};
           else delete rPr["w:i"];
         }
+        if (opts.sizeHalfPoints !== undefined) {
+          rPr["w:sz"] = { $: { "w:val": String(opts.sizeHalfPoints) } };
+          rPr["w:szCs"] = { $: { "w:val": String(opts.sizeHalfPoints) } };
+        }
+        if (opts.fontFamily !== undefined) {
+          rPr["w:rFonts"] = {
+            $: { "w:ascii": opts.fontFamily, "w:hAnsi": opts.fontFamily, "w:cs": opts.fontFamily },
+          };
+        }
       }
     }
+    return this;
+  }
+
+  /** Grid column of the tc at [row, col] (cumulative gridSpans of preceding cells). */
+  private gridColOf(row: number, col: number): number {
+    const cells = this.getCells(this.getRows()[row] ?? { "w:tc": [] });
+    let gc = 0;
+    for (let c = 0; c < col && c < cells.length; c++) {
+      const cs = Number((this.ensureCellProps(cells[c])["w:gridSpan"] as any)?.$?.["w:val"] ?? "1") || 1;
+      gc += cs;
+    }
+    return gc;
+  }
+
+  /**
+   * SPLIT a horizontally merged cell back into single cells: removes its
+   * gridSpan and inserts the missing empty cells after it. Reverse of
+   * mergeCellsHorizontal (the merged text stays in the first cell).
+   */
+  public splitCellHorizontal(row: number, col: number): this {
+    const rows = this.getRows();
+    if (!rows[row]) throw new Error(`Row ${row} not found`);
+    const cells = this.getCells(rows[row]);
+    const cell = cells[col];
+    if (!cell) throw new Error(`Cell [${row},${col}] not found`);
+    const tcPr = this.ensureCellProps(cell);
+    const cs = Number((tcPr["w:gridSpan"] as any)?.$?.["w:val"] ?? "1") || 1;
+    if (cs <= 1) return this; // nothing to split
+    delete tcPr["w:gridSpan"];
+    const empties = Array.from({ length: cs - 1 }, () => this.emptyCell());
+    cells.splice(col + 1, 0, ...empties);
+    this.setCells(rows[row], cells);
+    return this;
+  }
+
+  /**
+   * SPLIT a vertically merged cell: removes vMerge from the restart cell at
+   * [row, col] and from its continuation cells below (matched by GRID column).
+   * Reverse of mergeCellsVertical (the merged text stays in the top cell).
+   */
+  public splitCellVertical(row: number, col: number): this {
+    const rows = this.getRows();
+    const cell = this.getCell(row, col);
+    if (!cell) throw new Error(`Cell [${row},${col}] not found`);
+    delete this.ensureCellProps(cell)["w:vMerge"];
+    const gc = this.gridColOf(row, col);
+    for (let r = row + 1; r < rows.length; r++) {
+      const cells = this.getCells(rows[r]);
+      // Find the tc at grid column gc in this row.
+      let cgc = 0;
+      let target: TableCell | null = null;
+      for (const c of cells) {
+        if (cgc === gc) { target = c; break; }
+        const cs = Number((this.ensureCellProps(c)["w:gridSpan"] as any)?.$?.["w:val"] ?? "1") || 1;
+        cgc += cs;
+        if (cgc > gc) break;
+      }
+      if (!target) break;
+      const tcPr = this.ensureCellProps(target);
+      const vm = tcPr["w:vMerge"] as any;
+      const isCont = vm && !(vm.$ && vm.$["w:val"] === "restart");
+      if (!isCont) break; // chain ended
+      delete tcPr["w:vMerge"];
+    }
+    return this;
+  }
+
+  /** Move row `from` to position `to` (both 0-based). */
+  public moveRow(from: number, to: number): this {
+    const rows = this.getRows();
+    if (!rows[from]) throw new Error(`Row ${from} not found`);
+    const clamped = Math.max(0, Math.min(to, rows.length - 1));
+    const [row] = rows.splice(from, 1);
+    rows.splice(clamped, 0, row);
+    this.setRows(rows);
+    return this;
+  }
+
+  /** Move column `from` to position `to` (both 0-based, tc-indexed). */
+  public moveColumn(from: number, to: number): this {
+    const rows = this.getRows();
+    rows.forEach((row) => {
+      const cells = this.getCells(row);
+      if (!cells[from]) return; // ragged/merged rows: skip rows without that tc
+      const clamped = Math.max(0, Math.min(to, cells.length - 1));
+      const [cell] = cells.splice(from, 1);
+      cells.splice(clamped, 0, cell);
+      this.setCells(row, cells);
+    });
     return this;
   }
 
