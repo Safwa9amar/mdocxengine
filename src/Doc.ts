@@ -664,10 +664,35 @@ export class Doc {
     return this.mutateTable(index, (t) => {
       if (opts.alignment) t.setTableAlignment(opts.alignment);
       if (opts.direction) t.setTableDirection(opts.direction === "rtl");
-      if (opts.headerRow) t.setHeaderRow(0, opts.headerFill);
+      // headerFill alone also marks+shades row 0 (e.g. "make the header orange").
+      if (opts.headerRow || opts.headerFill) t.setHeaderRow(0, opts.headerFill);
       if (opts.borders != null) {
         const side = opts.borders ? { style: "single", size: 4 } : { style: "none" };
         t.setTableBorders({ top: side, bottom: side, left: side, right: side, insideH: side, insideV: side });
+      }
+    });
+  }
+
+  /** Shade one cell (row+col), a whole row (row only), or the header row (neither). 6-hex fill, no '#'. */
+  async shadeTable(index: number, opts: { row?: number; col?: number; fill: string }): Promise<this> {
+    return this.mutateTable(index, (t) => {
+      const row = opts.row ?? 0;
+      if (opts.col != null) t.setCellShading(row, opts.col, opts.fill);
+      else t.setRowShading(row, opts.fill);
+    });
+  }
+
+  /** Apply a shading grid: fills[r][c] = 6-hex fill for that cell, null/undefined = leave as-is. */
+  async shadeTableCells(index: number, fills: (string | null | undefined)[][]): Promise<this> {
+    return this.mutateTable(index, (t) => {
+      const rows = t.getRowCount();
+      const cols = t.getColumnCount();
+      for (let r = 0; r < Math.min(fills.length, rows); r++) {
+        const rowFills = fills[r] ?? [];
+        for (let c = 0; c < Math.min(rowFills.length, cols); c++) {
+          const fill = rowFills[c];
+          if (fill) t.setCellShading(r, c, fill.replace("#", ""));
+        }
       }
     });
   }
