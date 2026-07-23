@@ -630,11 +630,17 @@ export class Doc {
     return this;
   }
 
-  /** Insert a row into the table at `index`: below row `at` (0-based), or appended when `at` is omitted. */
-  async addTableRow(index: number, at?: number): Promise<this> {
+  /**
+   * Insert a row into the table at `index`: below row `at` (0-based), ABOVE it
+   * when `before` is true (e.g. a new first row: at=0, before=true), or
+   * appended when `at` is omitted.
+   */
+  async addTableRow(index: number, at?: number, before?: boolean): Promise<this> {
     return this.mutateTable(index, (t) => {
-      if (at != null && at >= 0 && at < t.getRowCount()) t.insertRowBelow(at);
-      else t.addRow();
+      if (at != null && at >= 0 && at < t.getRowCount()) {
+        if (before) t.insertRowAbove(at);
+        else t.insertRowBelow(at);
+      } else t.addRow();
     });
   }
 
@@ -643,11 +649,67 @@ export class Doc {
     return this.mutateTable(index, (t) => t.removeRow(row));
   }
 
-  /** Insert a column into the table at `index`: to the right of column `at` (0-based), or appended when omitted. */
-  async insertTableColumn(index: number, at?: number): Promise<this> {
+  /**
+   * Insert a column into the table at `index`: to the right of column `at`
+   * (0-based), to its LEFT when `before` is true (e.g. a new first column:
+   * at=0, before=true), or appended when omitted.
+   */
+  async insertTableColumn(index: number, at?: number, before?: boolean): Promise<this> {
     return this.mutateTable(index, (t) => {
       const cols = t.getColumnCount();
-      t.insertColumnRight(at != null && at >= 0 && at < cols ? at : Math.max(0, cols - 1));
+      const target = at != null && at >= 0 && at < cols ? at : Math.max(0, cols - 1);
+      if (before && at != null) t.insertColumnLeft(target);
+      else t.insertColumnRight(target);
+    });
+  }
+
+  /** Sort the table's data rows by column `col` (numeric when both parse). Header row 0 stays put unless includeHeader. */
+  async sortTable(index: number, col: number, opts?: { desc?: boolean; includeHeader?: boolean }): Promise<this> {
+    return this.mutateTable(index, (t) => {
+      t.sortByColumn(col, opts?.desc ? "desc" : "asc", !(opts?.includeHeader ?? false));
+    });
+  }
+
+  /**
+   * Column/table widths: `columnsTwips[i]` sets column i's preferred width
+   * (1440 twips = 1 inch; ~600 per cm); `autofit` switches the layout mode.
+   */
+  async setTableWidths(index: number, opts: { columnsTwips?: number[]; autofit?: "contents" | "window" }): Promise<this> {
+    return this.mutateTable(index, (t) => {
+      if (opts.autofit === "contents") t.autoFitContents();
+      else if (opts.autofit === "window") t.autoFitWindow();
+      if (opts.columnsTwips) {
+        for (let c = 0; c < opts.columnsTwips.length; c++) {
+          const w = opts.columnsTwips[c];
+          if (w && w > 0) t.setColumnWidth(c, Math.round(w));
+        }
+      }
+    });
+  }
+
+  /** Bold/italic a cell (row+col), a whole row (row only, col omitted) — existing text preserved. */
+  async formatTableCellText(
+    index: number,
+    opts: { row?: number; col?: number; bold?: boolean; italic?: boolean },
+  ): Promise<this> {
+    return this.mutateTable(index, (t) => {
+      const row = opts.row ?? 0;
+      const cols = t.getColumnCount();
+      const targets = opts.col != null ? [opts.col] : Array.from({ length: cols }, (_, c) => c);
+      for (const c of targets) t.setCellTextFormat(row, c, { bold: opts.bold, italic: opts.italic });
+    });
+  }
+
+  /** Merge cells: horizontal (row + startCol..endCol) or vertical (col + startRow..endRow). */
+  async mergeTableCells(
+    index: number,
+    opts:
+      | { direction: "horizontal"; row: number; start: number; end: number }
+      | { direction: "vertical"; col: number; start: number; end: number },
+  ): Promise<this> {
+    return this.mutateTable(index, (t) => {
+      if (opts.direction === "horizontal") t.mergeCellsHorizontal(opts.row, opts.start, opts.end);
+      else t.mergeCellsVertical(opts.col, opts.start, opts.end);
     });
   }
 

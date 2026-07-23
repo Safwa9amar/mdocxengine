@@ -445,6 +445,37 @@ export class Table {
   }
 
   /**
+   * Toggle bold/italic on a cell's EXISTING text (every run in every
+   * paragraph), preserving the content — unlike setCellContent, which
+   * replaces it. Pass only the flags you want to change.
+   */
+  public setCellTextFormat(row: number, col: number, opts: { bold?: boolean; italic?: boolean }): this {
+    const cell = this.getCell(row, col);
+    if (!cell) throw new Error(`Cell [${row},${col}] not found`);
+    const paragraphs = cell["w:p"];
+    if (!paragraphs) return this;
+    const arr = Array.isArray(paragraphs) ? paragraphs : [paragraphs];
+    for (const p of arr as any[]) {
+      const runs = p?.["w:r"];
+      if (!runs) continue;
+      const runArr = Array.isArray(runs) ? runs : [runs];
+      for (const r of runArr) {
+        if (!r || typeof r !== "object") continue;
+        const rPr = (r["w:rPr"] ??= {});
+        if (opts.bold !== undefined) {
+          if (opts.bold) rPr["w:b"] = {};
+          else delete rPr["w:b"];
+        }
+        if (opts.italic !== undefined) {
+          if (opts.italic) rPr["w:i"] = {};
+          else delete rPr["w:i"];
+        }
+      }
+    }
+    return this;
+  }
+
+  /**
    * Set the font colour of a cell's EXISTING text (every run in every
    * paragraph), preserving the content — unlike setCellContent, which replaces
    * it. 6-hex colour, with or without '#'.
