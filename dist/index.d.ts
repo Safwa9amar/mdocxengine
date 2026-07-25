@@ -2623,6 +2623,15 @@ export declare interface SectionInfo {
      * the chain; "" = an explicitly blank header part.
      */
     headerText: string | null;
+    /** The effective header's tab-separated positioned segments (e.g. a right/left
+     *  header → two entries) for faithful rendering. null when there's no header. */
+    headerSegments: string[] | null;
+    /** The effective header paragraph's bottom rule (Word's header line): `bottom`
+     *  true when present + its 6-hex `color`. null when there's no header. */
+    headerBorder: {
+        bottom: boolean;
+        color: string | null;
+    } | null;
     /** Effective footer text (same inheritance rules). */
     footerText: string | null;
     /** True when the effective footer part contains a PAGE field. */

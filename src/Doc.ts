@@ -181,6 +181,13 @@ function mode(nums: number[]): number | null {
 /** Extracted content of one header/footer part (internal). */
 interface HeaderFooterContent {
   text: string;
+  /** Tab-separated positioned parts of the running text (e.g. a right/left header
+   *  renders as two segments). One entry when there are no tab stops. Empty ends
+   *  trimmed. Lets a consumer lay them out positionally instead of concatenated. */
+  segments: string[];
+  /** The paragraph's BOTTOM border (Word's header rule), if any — `bottom` true when
+   *  present, `color` the 6-hex rule colour (e.g. the brown thesis rule) or null. */
+  border: { bottom: boolean; color: string | null };
   hasPage: boolean;
   /**
    * Page-number format in w:pgNumType vocabulary ("lowerRoman", …), derived
@@ -235,6 +242,33 @@ function decodeXmlEntities(s: string): string {
  * Paragraph texts are joined with single spaces so multi-paragraph parts don't
  * concatenate ("Chapter 3Introduction"), and whitespace runs are collapsed.
  */
+/** Split the running text into tab-separated positioned segments (the runs between
+ *  <w:tab/> elements, in order). A two-part right/left header → two segments; no tab
+ *  stops → one segment. Empty leading/trailing segments trimmed. */
+function extractHeaderSegments(stripped: string): string[] {
+  const segs: string[] = [];
+  let cur = "";
+  for (const m of stripped.matchAll(/<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>|<w:tab\b[^>]*\/?>/g)) {
+    if (m[1] !== undefined) cur += decodeXmlEntities(m[1]);
+    else { segs.push(cur); cur = ""; }
+  }
+  segs.push(cur);
+  const cleaned = segs.map((s) => s.replace(/\s+/g, " ").trim());
+  while (cleaned.length && cleaned[0] === "") cleaned.shift();
+  while (cleaned.length && cleaned[cleaned.length - 1] === "") cleaned.pop();
+  return cleaned;
+}
+
+/** The header paragraph's BOTTOM border (Word's header rule) — from the first <w:pBdr>. */
+function extractHeaderBorder(xml: string): { bottom: boolean; color: string | null } {
+  const pBdr = xml.match(/<w:pBdr\b[^>]*>([\s\S]*?)<\/w:pBdr>/);
+  if (!pBdr) return { bottom: false, color: null };
+  const bottom = pBdr[1].match(/<w:bottom\b[^>]*>/);
+  if (!bottom) return { bottom: false, color: null };
+  const color = bottom[0].match(/w:color="([0-9A-Fa-f]{6})"/);
+  return { bottom: true, color: color ? color[1].toUpperCase() : null };
+}
+
 function extractHeaderFooterContent(xml: string): HeaderFooterContent {
   // The PAGE field's instruction — complex (<w:instrText>) or simple
   // (w:fldSimple/@w:instr) — drives both the flag and the format.
@@ -276,7 +310,9 @@ function extractHeaderFooterContent(xml: string): HeaderFooterContent {
     .replace(/\s+/g, " ")
     .trim();
 
-  return { text, hasPage, pageFormat };
+  const segments = extractHeaderSegments(stripped);
+  const border = extractHeaderBorder(xml);
+  return { text, segments, border, hasPage, pageFormat };
 }
 
 /** Options accepted by paragraph/heading verbs. */
@@ -312,6 +348,12 @@ export interface SectionInfo {
    * the chain; "" = an explicitly blank header part.
    */
   headerText: string | null;
+  /** The effective header's tab-separated positioned segments (e.g. a right/left
+   *  header → two entries) for faithful rendering. null when there's no header. */
+  headerSegments: string[] | null;
+  /** The effective header paragraph's bottom rule (Word's header line): `bottom`
+   *  true when present + its 6-hex `color`. null when there's no header. */
+  headerBorder: { bottom: boolean; color: string | null } | null;
   /** Effective footer text (same inheritance rules). */
   footerText: string | null;
   /** True when the effective footer part contains a PAGE field. */
@@ -1087,6 +1129,8 @@ export class Doc {
         index: k,
         startBlockIndex,
         headerText: header ? header.text : null,
+        headerSegments: header ? header.segments : null,
+        headerBorder: header ? header.border : null,
         footerText: footer ? footer.text : null,
         footerHasPageNumbers: !!footer?.hasPage,
         // Explicit pgNumType wins; else the format the effective footer's PAGE
