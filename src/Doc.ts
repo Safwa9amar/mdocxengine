@@ -331,6 +331,26 @@ export interface FooterOptions {
   includeTotalPages?: boolean;
 }
 
+/** Namespaces for a `<w:hdr>`/`<w:ftr>` part that may carry inline DrawingML
+ *  images (logos). Includes the wordprocessing + relationship + DrawingML picture
+ *  namespaces so compiled region bodies with `<w:drawing>` runs are valid. */
+const CHROME_PART_NS =
+  'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" ' +
+  'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" ' +
+  'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" ' +
+  'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" ' +
+  'xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"';
+
+/** One logo image embedded inside an applied header/footer part. `token` is a
+ *  unique placeholder present in the region XML (e.g. inside `<a:blip r:embed>`),
+ *  replaced with the part-local relationship id once the bytes are embedded. */
+export type ChromeImage = { token: string; bytes: Buffer; ext: string };
+
+/** A compiled header or footer to apply to a section. `xml` is the INNER region
+ *  body (paragraphs/tables), NOT wrapped in `<w:hdr>`/`<w:ftr>` — {@link Doc.applySectionChrome}
+ *  adds the wrapper + namespaces. */
+export type ChromePart = { xml: string; images: ChromeImage[] };
+
 /** Result of a section-scoped header/footer change. */
 export interface SectionEditResult {
   sectionIndex: number;
@@ -1069,6 +1089,54 @@ export class Doc {
     await this.engine.sections.setSectionFooter(sectionIndex, relId, "default");
     if (oldRelId && oldRelId !== relId) await this.removeHeaderFooterByRel("footer", oldRelId);
     return { sectionIndex, totalSections: sections.length };
+  }
+
+  /**
+   * Apply a COMPILED header and/or footer (raw OOXML region bodies) to the section
+   * that contains the block at `blockIndex`, embedding any logo images into the
+   * header/footer part's OWN relationships so they resolve in Word. This is how a
+   * saved Header/Footer Studio template is applied onto a live thesis at full
+   * fidelity (tab-stop segments, tables, live fields, logos).
+   *
+   * Each {@link ChromePart}.`xml` is the inner region body — this method wraps it in
+   * `<w:hdr>`/`<w:ftr>` with the DrawingML namespaces. Every image `token` in that
+   * xml is replaced with the part-local `r:embed` id once its bytes are embedded.
+   * The section's previous distinct header/footer part (if any) is removed.
+   */
+  async applySectionChrome(
+    blockIndex: number,
+    parts: { header?: ChromePart; footer?: ChromePart },
+  ): Promise<{ sectionIndex: number; warnings: string[] }> {
+    const warnings: string[] = [];
+    const { sections, sectionIndex } = await this.resolveSection(blockIndex);
+
+    if (parts.header) {
+      const oldRelId = sections[sectionIndex]?.headerRefs?.find((h) => h.type === "default")?.relId;
+      let xml = `<w:hdr ${CHROME_PART_NS}>${parts.header.xml}</w:hdr>`;
+      const { headerPath, relId } = await this.engine.header.addHeader("", "default", xml, { registerInSectPr: false });
+      for (const img of parts.header.images) {
+        const rid = await this.engine.media.addImageToPartRels(headerPath, img.bytes, img.ext);
+        xml = xml.split(img.token).join(rid);
+      }
+      if (parts.header.images.length) this.engine.header.updateHeader(headerPath, xml);
+      await this.engine.sections.setSectionHeader(sectionIndex, relId, "default");
+      if (oldRelId && oldRelId !== relId) await this.removeHeaderFooterByRel("header", oldRelId);
+    }
+
+    if (parts.footer) {
+      const oldRelId = sections[sectionIndex]?.footerRefs?.find((f) => f.type === "default")?.relId;
+      let xml = `<w:ftr ${CHROME_PART_NS}>${parts.footer.xml}</w:ftr>`;
+      const { footerPath, relId } = await this.engine.footer.addFooter("", "default", xml, { registerInSectPr: false });
+      for (const img of parts.footer.images) {
+        const rid = await this.engine.media.addImageToPartRels(footerPath, img.bytes, img.ext);
+        xml = xml.split(img.token).join(rid);
+      }
+      if (parts.footer.images.length) this.engine.footer.updateFooter(footerPath, xml);
+      await this.engine.sections.setSectionFooter(sectionIndex, relId, "default");
+      if (oldRelId && oldRelId !== relId) await this.removeHeaderFooterByRel("footer", oldRelId);
+    }
+
+    return { sectionIndex, warnings };
   }
 
   /** Map a block index → its owning section (+ the full section list). */

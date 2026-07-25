@@ -195,6 +195,54 @@ export class MediaManager {
   }
 
   /**
+   * Add image bytes to word/media (+ register the content-type Default) WITHOUT
+   * creating any relationship. Use when the relationship must live in a specific
+   * part's own _rels (e.g. a header/footer part) rather than the document rels —
+   * see {@link addImageToPartRels}. Returns the media part path (e.g.
+   * "word/media/image2.png").
+   */
+  public async addImagePart(
+    imageBuffer: Buffer,
+    extension: string,
+  ): Promise<{ imagePath: string }> {
+    const ext = extension.toLowerCase();
+    const existingImages = this.listImages();
+    const nums = existingImages.map((img) => {
+      const m = img.name.match(/image(\d+)\./);
+      return m ? parseInt(m[1], 10) : 0;
+    });
+    const next = nums.length ? Math.max(...nums) + 1 : 1;
+    const imagePath = `${MEDIA_DIR}/image${next}.${ext}`;
+    this.zip.addFile(imagePath, imageBuffer);
+    const contentType = CONTENT_TYPE_MAP[ext] ?? `image/${ext}`;
+    await this.contentTypes.addDefault(ext, contentType);
+    return { imagePath };
+  }
+
+  /**
+   * Embed an image into a SPECIFIC part's own relationships and return that
+   * part-local `r:embed` id. A header/footer part resolves `r:embed` against its
+   * own `word/_rels/<part>.rels`, NOT the document rels — so an id from
+   * {@link insertImage} would not resolve inside a header. This adds the bytes +
+   * content-type, then a part-local image relationship (creating the part's .rels
+   * if absent), and hands back the id to drop into the part's `<a:blip r:embed>`.
+   * @param partPath  Full part path, e.g. "word/header1.xml".
+   */
+  public async addImageToPartRels(
+    partPath: string,
+    imageBuffer: Buffer,
+    extension: string,
+  ): Promise<string> {
+    const { imagePath } = await this.addImagePart(imageBuffer, extension);
+    const partName = partPath.replace(/^word\//, "");
+    const rels = new RelManager(this.zip, `word/_rels/${partName}.rels`);
+    const relId = await rels.genId();
+    // Target is relative to the part's folder (word/), so drop the "word/" prefix.
+    await rels.addRelationship(relId, IMAGE_REL_TYPE, imagePath.replace(/^word\//, ""));
+    return relId;
+  }
+
+  /**
    * Replaces an existing image's bytes in-place (same filename, same relId).
    * @param name         Filename like "image1.png" (without path prefix).
    * @param newBuffer    New image bytes.

@@ -247,6 +247,23 @@ declare type ChapterSeparator_2 = "hyphen" | "period" | "colon" | "emDash" | "en
 
 declare type ChapterSeparator_3 = "hyphen" | "period" | "colon" | "emDash" | "enDash";
 
+/** One logo image embedded inside an applied header/footer part. `token` is a
+ *  unique placeholder present in the region XML (e.g. inside `<a:blip r:embed>`),
+ *  replaced with the part-local relationship id once the bytes are embedded. */
+declare type ChromeImage = {
+    token: string;
+    bytes: Buffer;
+    ext: string;
+};
+
+/** A compiled header or footer to apply to a section. `xml` is the INNER region
+ *  body (paragraphs/tables), NOT wrapped in `<w:hdr>`/`<w:ftr>` — {@link Doc.applySectionChrome}
+ *  adds the wrapper + namespaces. */
+declare type ChromePart = {
+    xml: string;
+    images: ChromeImage[];
+};
+
 export declare class CitationManager {
     private zip;
     constructor(zip: default_2);
@@ -669,6 +686,25 @@ export declare class Doc {
      * and/or page numbers). Cleans up the section's previous distinct footer part.
      */
     setSectionFooter(blockIndex: number, opts?: FooterOptions): Promise<SectionEditResult>;
+    /**
+     * Apply a COMPILED header and/or footer (raw OOXML region bodies) to the section
+     * that contains the block at `blockIndex`, embedding any logo images into the
+     * header/footer part's OWN relationships so they resolve in Word. This is how a
+     * saved Header/Footer Studio template is applied onto a live thesis at full
+     * fidelity (tab-stop segments, tables, live fields, logos).
+     *
+     * Each {@link ChromePart}.`xml` is the inner region body — this method wraps it in
+     * `<w:hdr>`/`<w:ftr>` with the DrawingML namespaces. Every image `token` in that
+     * xml is replaced with the part-local `r:embed` id once its bytes are embedded.
+     * The section's previous distinct header/footer part (if any) is removed.
+     */
+    applySectionChrome(blockIndex: number, parts: {
+        header?: ChromePart;
+        footer?: ChromePart;
+    }): Promise<{
+        sectionIndex: number;
+        warnings: string[];
+    }>;
     /** Map a block index → its owning section (+ the full section list). */
     private resolveSection;
     /**
@@ -1593,6 +1629,26 @@ export declare class MediaManager {
         relId: string;
     }>;
     /**
+     * Add image bytes to word/media (+ register the content-type Default) WITHOUT
+     * creating any relationship. Use when the relationship must live in a specific
+     * part's own _rels (e.g. a header/footer part) rather than the document rels —
+     * see {@link addImageToPartRels}. Returns the media part path (e.g.
+     * "word/media/image2.png").
+     */
+    addImagePart(imageBuffer: Buffer, extension: string): Promise<{
+        imagePath: string;
+    }>;
+    /**
+     * Embed an image into a SPECIFIC part's own relationships and return that
+     * part-local `r:embed` id. A header/footer part resolves `r:embed` against its
+     * own `word/_rels/<part>.rels`, NOT the document rels — so an id from
+     * {@link insertImage} would not resolve inside a header. This adds the bytes +
+     * content-type, then a part-local image relationship (creating the part's .rels
+     * if absent), and hands back the id to drop into the part's `<a:blip r:embed>`.
+     * @param partPath  Full part path, e.g. "word/header1.xml".
+     */
+    addImageToPartRels(partPath: string, imageBuffer: Buffer, extension: string): Promise<string>;
+    /**
      * Replaces an existing image's bytes in-place (same filename, same relId).
      * @param name         Filename like "image1.png" (without path prefix).
      * @param newBuffer    New image bytes.
@@ -2268,9 +2324,9 @@ export declare interface RelationshipEntry {
 
 export declare class RelManager {
     zip: default_2;
-    relsPath: RelsType;
+    relsPath: string;
     ns: string;
-    constructor(zip: default_2, relsPath?: RelsType);
+    constructor(zip: default_2, relsPath?: string);
     private readRels;
     private writeRels;
     /**

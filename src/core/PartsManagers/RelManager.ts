@@ -4,10 +4,12 @@ import AdmZip from "adm-zip";
 
 export class RelManager {
   zip: AdmZip;
-  relsPath = RelsType.Document;
+  // A known package rels part (RelsType) OR any part-local rels path, e.g.
+  // "word/_rels/header1.xml.rels" for embedding media into a header/footer part.
+  relsPath: string = RelsType.Document;
   ns = "http://schemas.openxmlformats.org/package/2006/relationships";
 
-  constructor(zip: AdmZip, relsPath = RelsType.Document) {
+  constructor(zip: AdmZip, relsPath: string = RelsType.Document) {
     this.zip = zip;
     this.relsPath = relsPath;
   }
