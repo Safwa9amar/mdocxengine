@@ -246,6 +246,21 @@ function decodeXmlEntities(s: string): string {
  *  <w:tab/> elements, in order). A two-part right/left header → two segments; no tab
  *  stops → one segment. Empty leading/trailing segments trimmed. */
 function extractHeaderSegments(stripped: string): string[] {
+  const textOf = (frag: string): string =>
+    Array.from(frag.matchAll(/<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g))
+      .map((m) => decodeXmlEntities(m[1] ?? ""))
+      .join("")
+      .replace(/\s+/g, " ")
+      .trim();
+  // Table header (a very common two-part running head laid out with a 1-row table):
+  // each cell (w:tc) is a positioned segment. Falls through to tab-splitting otherwise.
+  if (/<w:tbl\b/.test(stripped)) {
+    const cells = Array.from(stripped.matchAll(/<w:tc\b[\s\S]*?<\/w:tc>/g))
+      .map((m) => textOf(m[0]))
+      .filter((s) => s.length > 0);
+    if (cells.length) return cells;
+  }
+  // Otherwise split the runs on <w:tab/> (a tab-stopped header).
   const segs: string[] = [];
   let cur = "";
   for (const m of stripped.matchAll(/<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>|<w:tab\b[^>]*\/?>/g)) {
@@ -261,12 +276,18 @@ function extractHeaderSegments(stripped: string): string[] {
 
 /** The header paragraph's BOTTOM border (Word's header rule) — from the first <w:pBdr>. */
 function extractHeaderBorder(xml: string): { bottom: boolean; color: string | null } {
-  const pBdr = xml.match(/<w:pBdr\b[^>]*>([\s\S]*?)<\/w:pBdr>/);
-  if (!pBdr) return { bottom: false, color: null };
-  const bottom = pBdr[1].match(/<w:bottom\b[^>]*>/);
-  if (!bottom) return { bottom: false, color: null };
-  const color = bottom[0].match(/w:color="([0-9A-Fa-f]{6})"/);
-  return { bottom: true, color: color ? color[1].toUpperCase() : null };
+  // A header rule is a BOTTOM border with a real style — it may live in a paragraph
+  // border (<w:pBdr>) OR a table/cell border (<w:tblBorders>/<w:tcBorders>). Scan for
+  // the first <w:bottom> whose w:val isn't nil/none (skips tcMar spacing, which uses
+  // w:w not w:val) and read its colour.
+  for (const m of xml.matchAll(/<w:bottom\b([^>]*)>/g)) {
+    const attrs = m[1] ?? "";
+    const val = attrs.match(/w:val="([^"]*)"/)?.[1];
+    if (!val || val === "nil" || val === "none") continue;
+    const color = attrs.match(/w:color="([0-9A-Fa-f]{6})"/)?.[1] ?? null;
+    return { bottom: true, color: color ? color.toUpperCase() : null };
+  }
+  return { bottom: false, color: null };
 }
 
 function extractHeaderFooterContent(xml: string): HeaderFooterContent {
