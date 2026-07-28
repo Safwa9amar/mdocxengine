@@ -1292,6 +1292,23 @@ export declare interface HeadingPattern {
     level: number;
 }
 
+/** Run-level formatting to force onto a heading style's `<w:rPr>`. Only the
+ *  provided fields are touched. */
+declare interface HeadingRunFormatting {
+    /** Font size in POINTS (written as half-points to `<w:sz>`/`<w:szCs>`). */
+    fontSizePt?: number;
+    /** true adds `<w:b/><w:bCs/>`; false removes them. */
+    bold?: boolean;
+    /** Hex colour, with or without leading '#'. */
+    color?: string;
+}
+
+/** Which `HeadingN` styles were found (and rewritten) vs. missing from styles.xml. */
+declare interface HeadingStyleResult {
+    updatedLevels: number[];
+    missingLevels: number[];
+}
+
 /**
  * Interface for a hyperlink element that contains one or more runs.
  * It's a container for text that serves as a link to another part of the document or an external URL.
@@ -2878,6 +2895,13 @@ export declare class StylesManager {
      * Removes a style by ID.
      */
     removeStyle(styleId: string): Promise<void>;
+    /**
+     * Forces `formatting` (font size / bold / color) onto the `Heading{level}`
+     * styles for the given `levels` (default 1–6) — a STYLE-level change, so it
+     * applies uniformly to every heading using that level, present and future,
+     * rather than one paragraph's run. See {@link applyHeadingStyleToXml}.
+     */
+    setHeadingStyle(levels: number[] | undefined, formatting: HeadingRunFormatting): Promise<HeadingStyleResult>;
 }
 
 /**
