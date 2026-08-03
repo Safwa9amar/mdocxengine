@@ -154,13 +154,33 @@ export function matchesTarget(target: TextStyleTarget, block: BlockInfo, xml: st
 
 /**
  * Would a paragraph carrying `styleId` (or no style at all) resolve to one of
- * `styleIds` under ordinary OOXML cascade resolution? A paragraph with no
- * `w:pStyle` resolves to `Normal`; a paragraph with a `w:pStyle` resolves to
- * that style, full stop — no cheap approximation needed there. No cascade
- * walk (e.g. through `w:basedOn` chains): the targets this feature deals with
- * are all direct, single-level styles.
+ * `styleIds` under ordinary OOXML cascade resolution, AND did Phase 2 actually
+ * land a patch on that style? A paragraph with no `w:pStyle` resolves to
+ * `Normal`; a paragraph with a `w:pStyle` resolves to that style, full stop —
+ * no cheap approximation needed there. No cascade walk (e.g. through
+ * `w:basedOn` chains): the targets this feature deals with are all direct,
+ * single-level styles.
+ *
+ * `stylePatched` is the second, load-bearing half of this check. Style-id
+ * membership alone is not enough: dangling style references are the NORMAL
+ * state in this corpus (the seed `thesis-base.docx` has styles declaring
+ * `basedOn="Normal"`/`basedOn="DefaultParagraphFont"` while defining neither),
+ * so a paragraph can carry `w:pStyle="Heading3"` while `styles.xml` has no
+ * `Heading3` entry at all. `headingN`/`title`/`lists`/`footnotes` carry no
+ * `ensure`, so Phase 2's `setStyleRunProps` silently no-ops when the style is
+ * missing (`created: false, updated: false`). Stripping that paragraph's runs
+ * on style-id membership alone would remove its formatting and leave nothing
+ * behind to supply a replacement — a change that reports success while making
+ * the document worse, exactly what this feature exists to prevent. Only strip
+ * when the style patch actually happened; otherwise fall through to a direct
+ * write, which is always safe regardless of what styles.xml contains.
  */
-function resolvesToPatchedStyle(styleId: string | null, styleIds: readonly string[]): boolean {
+function resolvesToPatchedStyle(
+  styleId: string | null,
+  styleIds: readonly string[],
+  stylePatched: boolean,
+): boolean {
+  if (!stylePatched) return false;
   return styleId !== null ? styleIds.includes(styleId) : styleIds.includes("Normal");
 }
 
@@ -269,11 +289,18 @@ function eachParagraphIn(xml: string): Array<{ start: number; end: number; xml: 
   return out;
 }
 
-/** Strip-or-direct-write every paragraph nested inside a block, given `styleIds`. */
+/**
+ * Strip-or-direct-write every paragraph nested inside a block, given
+ * `styleIds`. `stylePatched` must reflect whether Phase 2 actually created or
+ * updated the target's style (see {@link resolvesToPatchedStyle}) — when
+ * false, every paragraph here falls through to a direct write regardless of
+ * its own `w:pStyle`, since stripping would have nothing left to fall back on.
+ */
 function restyleParagraphsIn(
   xml: string,
   styleIds: readonly string[],
   props: RunProps,
+  stylePatched: boolean,
 ): { xml: string; stripped: number; skipped: number; written: number; paragraphsAffected: number } {
   let out = xml;
   let stripped = 0;
@@ -286,7 +313,7 @@ function restyleParagraphsIn(
     const para = paras[i];
     const styleId = paragraphStyleId(para.xml);
     let nextXml: string;
-    if (resolvesToPatchedStyle(styleId, styleIds)) {
+    if (resolvesToPatchedStyle(styleId, styleIds, stylePatched)) {
       const r = stripPropsFromRuns(para.xml, props);
       nextXml = r.xml;
       stripped += r.stripped;
@@ -398,6 +425,15 @@ export class TextStyleManager {
       for (const target of bodyTargets) {
         const spec = TARGET_SPECS[target];
         const styleId = spec.styleIds[0];
+        const sr = styleResults.get(target);
+        // GATE: a paragraph is only "covered by the style patch" (and safe to
+        // strip) when Phase 2 actually created or touched this style. Style-id
+        // membership alone is not enough — dangling `w:pStyle` references
+        // (e.g. a paragraph styled "Heading3" with no `Heading3` entry in
+        // styles.xml) are the NORMAL state in this corpus, and stripping a
+        // run's own formatting with nothing patched to replace it would strand
+        // that paragraph with none at all. See {@link resolvesToPatchedStyle}.
+        const stylePatched = Boolean(sr?.created || sr?.updated);
         let runsStripped = 0;
         let runsSkipped = 0;
         let directWrites = 0;
@@ -409,7 +445,7 @@ export class TextStyleManager {
           if (!info || !matchesTarget(target, info, block.xml)) continue;
 
           if (target === "tables") {
-            const r = restyleParagraphsIn(block.xml, spec.styleIds, props);
+            const r = restyleParagraphsIn(block.xml, spec.styleIds, props, stylePatched);
             block.xml = r.xml;
             runsStripped += r.stripped;
             runsSkipped += r.skipped;
@@ -420,7 +456,7 @@ export class TextStyleManager {
           }
 
           paragraphsAffected++;
-          if (resolvesToPatchedStyle(info.styleId, spec.styleIds)) {
+          if (resolvesToPatchedStyle(info.styleId, spec.styleIds, stylePatched)) {
             const r = stripPropsFromRuns(block.xml, props);
             block.xml = r.xml;
             runsStripped += r.stripped;
@@ -434,7 +470,6 @@ export class TextStyleManager {
           }
         }
 
-        const sr = styleResults.get(target);
         reports.push({
           target,
           styleId,
@@ -478,7 +513,8 @@ export class TextStyleManager {
     const xml = this.zip.readAsText(FOOTNOTES_PATH);
     if (!xml) return base; // no footnotes part — nothing to do, not an error
 
-    const r = restyleParagraphsIn(xml, spec.styleIds, props);
+    const stylePatched = Boolean(styleResult?.created || styleResult?.updated);
+    const r = restyleParagraphsIn(xml, spec.styleIds, props, stylePatched);
     if (r.stripped || r.written) {
       this.zip.addFile(FOOTNOTES_PATH, Buffer.from(r.xml, "utf-8"));
     }
