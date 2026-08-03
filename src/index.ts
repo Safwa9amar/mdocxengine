@@ -376,3 +376,17 @@ export type {
   ShapeSize,
 } from "./core/PartsManagers/ShapeManager";
 export { EMU_PER_INCH, EMU_PER_CM } from "./core/PartsManagers/ShapeManager";
+export {
+  TextStyleManager,
+  TARGET_SPECS,
+  expandTargets,
+  type TextStyleTarget,
+  type TextStyleTargetInput,
+  type TargetReport,
+} from "./core/PartsManagers/TextStyleManager";
+export { type RunProps } from "./core/ooxml/runProps";
+export {
+  applyStyleRunPropsToXml,
+  buildParagraphStyleXml,
+  type EnsureStyleSpec,
+} from "./core/PartsManagers/StylesManager";

@@ -29,6 +29,13 @@ import {
 } from "./core/files/body/OrderedBody";
 import { pixelsToEmu, type InlineImage } from "./core/PartsManagers/MediaManager";
 import type { SectionEntry, SectionHeaderFooterRef } from "./core/PartsManagers/SectionManager";
+import {
+  TextStyleManager,
+  expandTargets,
+  type TextStyleTargetInput,
+  type TargetReport,
+} from "./core/PartsManagers/TextStyleManager";
+import type { RunProps } from "./core/ooxml/runProps";
 
 const APPEND = Number.MAX_SAFE_INTEGER;
 
@@ -672,6 +679,32 @@ export class Doc {
     });
     await this.engine.document.saveBlocks(blocks);
     return this;
+  }
+
+  /**
+   * Apply run-level formatting to one or more named PARTS of the document —
+   * `body`, `headings` (or `heading1`…`heading6`), `title`, `captions`, `lists`,
+   * `tables`, `footnotes`.
+   *
+   * Style-level with a strip: each target's Word style is ensured and patched,
+   * then the named property is removed from that target's runs so the style
+   * shows through (imported theses carry formatting on the RUNS, which would
+   * otherwise win). Paragraphs that would not resolve to the target's patched
+   * style get a direct write instead. Properties that were not named are never
+   * touched.
+   *
+   * Returns one report per target, so a caller can tell a no-op from a change.
+   *
+   * @throws on an unknown target name, and on a malformed `styles.xml`. A
+   * malformed individual RUN is skipped and counted, never aborting the pass.
+   */
+  async setTextStyle(
+    targets: readonly TextStyleTargetInput[],
+    props: RunProps,
+  ): Promise<TargetReport[]> {
+    const expanded = expandTargets(targets as readonly string[]);
+    const infos = await this.blocks();
+    return new TextStyleManager(this.engine.zip).apply(expanded, props, infos);
   }
 
   /** Delete the block at `index`. */
