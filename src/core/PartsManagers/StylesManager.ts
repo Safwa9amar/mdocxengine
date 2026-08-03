@@ -1,5 +1,7 @@
 import * as XmlUtils from "@/utils/xmlUtils";
 import AdmZip from "adm-zip";
+import { canonicalizeRunProps, canonicalizeStyleChildren } from "@/core/ooxml/canonicalOrder";
+import { mergeRunProps, type RunProps } from "@/core/ooxml/runProps";
 
 const STYLES_PATH = "word/styles.xml";
 
@@ -61,7 +63,7 @@ function rewriteHeadingRunProps(rPrInner: string, formatting: HeadingRunFormatti
     sizeTags = `<w:sz w:val="${halfPts}"/><w:szCs w:val="${halfPts}"/>`;
   }
 
-  return `${boldTags}${body}${colorTag}${sizeTags}`;
+  return canonicalizeRunProps(`${boldTags}${body}${colorTag}${sizeTags}`);
 }
 
 /** Rewrite one `<w:style … w:styleId="HeadingN">…</w:style>` block's `<w:rPr>`. */
@@ -111,6 +113,88 @@ export function applyHeadingStyleToXml(
   }
 
   return { xml, result: { updatedLevels, missingLevels } };
+}
+
+/** How to create a paragraph style that does not exist yet. */
+export interface EnsureStyleSpec {
+  /** `w:name` — Word's display name. Maps the style onto a built-in when it matches. */
+  name: string;
+  /** `w:basedOn` target, omitted when absent. */
+  basedOn?: string;
+  /** Emit `w:default="1"` — used for `Normal`. */
+  isDefault?: boolean;
+}
+
+/** Build a minimal, schema-ordered paragraph `<w:style>`. */
+export function buildParagraphStyleXml(
+  styleId: string,
+  name: string,
+  opts: { basedOn?: string; isDefault?: boolean } = {},
+): string {
+  const defaultAttr = opts.isDefault ? ` w:default="1"` : "";
+  const basedOn = opts.basedOn ? `<w:basedOn w:val="${opts.basedOn}"/>` : "";
+  return (
+    `<w:style w:type="paragraph"${defaultAttr} w:styleId="${styleId}">` +
+    `<w:name w:val="${name}"/>${basedOn}<w:qFormat/>` +
+    `</w:style>`
+  );
+}
+
+/**
+ * Pure transform: apply `props` to the `<w:rPr>` of the `styleId` style inside a
+ * `word/styles.xml` string, creating the style first when `ensure` is supplied
+ * and it does not exist. Returns the rewritten XML plus whether the style was
+ * created and whether it ended up changed.
+ *
+ * The seed `thesis-base.docx` defines neither `Normal` nor `Caption`, so the
+ * create path is the ordinary one, not an error path.
+ *
+ * @throws if the style fragment is malformed markup (propagated from
+ * `canonicalizeRunProps`). This operates on ONE small styles fragment, not
+ * per-run, so failing loudly is correct — a broken `styles.xml` must not be
+ * half-applied. Callers doing PER-RUN work must catch per run instead.
+ */
+export function applyStyleRunPropsToXml(
+  stylesXml: string,
+  styleId: string,
+  props: RunProps,
+  ensure?: EnsureStyleSpec,
+): { xml: string; created: boolean; updated: boolean } {
+  let xml = stylesXml;
+  let created = false;
+
+  const blockRe = new RegExp(`<w:style\\b[^>]*w:styleId="${styleId}"[^>]*>[\\s\\S]*?<\\/w:style>`);
+  if (!blockRe.test(xml)) {
+    if (!ensure) return { xml, created: false, updated: false };
+    const fresh = buildParagraphStyleXml(styleId, ensure.name, {
+      basedOn: ensure.basedOn,
+      isDefault: ensure.isDefault,
+    });
+    xml = xml.replace(/<\/w:styles>\s*$/, `${fresh}</w:styles>`);
+    created = true;
+  }
+
+  const match = blockRe.exec(xml);
+  if (!match) return { xml, created, updated: false };
+
+  const block = match[0];
+  const rPrMatch = /<w:rPr>([\s\S]*?)<\/w:rPr>/.exec(block);
+  const nextInner = mergeRunProps(rPrMatch ? rPrMatch[1] : "", props);
+
+  let rewritten: string;
+  if (rPrMatch) {
+    rewritten = block.replace(rPrMatch[0], `<w:rPr>${nextInner}</w:rPr>`);
+  } else if (nextInner) {
+    const inner = /^(<w:style\b[^>]*>)([\s\S]*)(<\/w:style>)$/.exec(block);
+    if (!inner) return { xml, created, updated: false };
+    const children = canonicalizeStyleChildren(`${inner[2]}<w:rPr>${nextInner}</w:rPr>`);
+    rewritten = `${inner[1]}${children}${inner[3]}`;
+  } else {
+    return { xml, created, updated: false };
+  }
+
+  xml = xml.slice(0, match.index) + rewritten + xml.slice(match.index + block.length);
+  return { xml, created, updated: true };
 }
 
 export class StylesManager {
@@ -204,5 +288,21 @@ export class StylesManager {
     const { xml: out, result } = applyHeadingStyleToXml(xml, levels, formatting);
     this.zip.addFile(STYLES_PATH, Buffer.from(out, "utf-8"));
     return result;
+  }
+
+  /**
+   * Ensure `styleId` exists (creating it from `ensure` when missing), then apply
+   * `props` to its `<w:rPr>`. A STYLE-level change: it reaches every paragraph
+   * using the style, present and future.
+   */
+  public async setStyleRunProps(
+    styleId: string,
+    props: RunProps,
+    ensure?: EnsureStyleSpec,
+  ): Promise<{ created: boolean; updated: boolean }> {
+    const xml = this.zip.readAsText(STYLES_PATH) ?? "";
+    const { xml: out, created, updated } = applyStyleRunPropsToXml(xml, styleId, props, ensure);
+    if (created || updated) this.zip.addFile(STYLES_PATH, Buffer.from(out, "utf-8"));
+    return { created, updated };
   }
 }

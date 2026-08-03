@@ -1,6 +1,11 @@
 import { describe, test, expect, beforeEach } from "vitest";
 import AdmZip from "adm-zip";
-import { StylesManager, applyHeadingStyleToXml } from "./StylesManager";
+import {
+  StylesManager,
+  applyHeadingStyleToXml,
+  applyStyleRunPropsToXml,
+  buildParagraphStyleXml,
+} from "./StylesManager";
 
 const SAMPLE_STYLES_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
@@ -139,5 +144,68 @@ describe("applyHeadingStyleToXml", () => {
   test("empty formatting is effectively a no-op on content", () => {
     const { xml } = applyHeadingStyleToXml(HEADING_STYLES_XML, [1], {});
     expect(xml).toBe(HEADING_STYLES_XML);
+  });
+});
+
+const NO_NORMAL_STYLES_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault/><w:pPrDefault/></w:docDefaults><w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:rPr><w:rFonts w:ascii="Calibri"/></w:rPr><w:basedOn w:val="Normal"/></w:style></w:styles>`;
+
+describe("buildParagraphStyleXml", () => {
+  test("emits CT_Style child order", () => {
+    expect(buildParagraphStyleXml("Normal", "Normal", { isDefault: true })).toBe(
+      `<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style>`,
+    );
+  });
+
+  test("emits basedOn before qFormat when given", () => {
+    expect(buildParagraphStyleXml("Caption", "caption", { basedOn: "Normal" })).toBe(
+      `<w:style w:type="paragraph" w:styleId="Caption"><w:name w:val="caption"/><w:basedOn w:val="Normal"/><w:qFormat/></w:style>`,
+    );
+  });
+});
+
+describe("applyStyleRunPropsToXml", () => {
+  test("creates a missing style, then applies the props to it", () => {
+    const { xml, created, updated } = applyStyleRunPropsToXml(
+      NO_NORMAL_STYLES_XML,
+      "Normal",
+      { font: "Simplified Arabic", sizePt: 16 },
+      { name: "Normal", isDefault: true },
+    );
+    expect(created).toBe(true);
+    expect(updated).toBe(true);
+    expect(xml).toContain(`w:styleId="Normal"`);
+    expect(xml).toContain(`w:cs="Simplified Arabic"`);
+    expect(xml).toContain(`<w:szCs w:val="32"/>`);
+  });
+
+  test("patches an existing style in place without duplicating it", () => {
+    const { xml, created } = applyStyleRunPropsToXml(
+      NO_NORMAL_STYLES_XML,
+      "Heading1",
+      { sizePt: 18 },
+      { name: "heading 1" },
+    );
+    expect(created).toBe(false);
+    expect(xml.match(/w:styleId="Heading1"/g)).toHaveLength(1);
+    expect(xml).toContain(`<w:sz w:val="36"/><w:szCs w:val="36"/>`);
+    expect(xml).toMatch(/<w:rFonts[^>]*\/><w:sz w:val="36"\/>/);
+  });
+
+  test("reports updated:false when the style is missing and no ensure spec is given", () => {
+    const { created, updated } = applyStyleRunPropsToXml(
+      NO_NORMAL_STYLES_XML,
+      "Caption",
+      { sizePt: 12 },
+    );
+    expect(created).toBe(false);
+    expect(updated).toBe(false);
+  });
+});
+
+describe("applyHeadingStyleToXml ordering fix", () => {
+  test("bold no longer lands before rFonts", () => {
+    const { xml } = applyHeadingStyleToXml(NO_NORMAL_STYLES_XML, [1], { bold: true });
+    expect(xml).toMatch(/<w:rPr><w:rFonts[^>]*\/><w:b\/><w:bCs\/><\/w:rPr>/);
   });
 });
