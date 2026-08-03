@@ -219,8 +219,13 @@ export function splitDocument(documentXml: string): SplitDocument {
  * Scan a body's inner XML into top-level children, depth-aware.
  * Any inter-element text/whitespace/comments are captured as "other" blocks so
  * the join is byte-lossless.
+ *
+ * Exported for reuse by other string-level scanners in this package (e.g.
+ * `core/ooxml/canonicalOrder.ts`) that need the same comment/CDATA/PI-aware,
+ * same-tag-name depth tracking this module already gets right — rather than
+ * having them duplicate it, imperfectly, on their own.
  */
-function scanTopLevelChildren(inner: string): BodyBlock[] {
+export function scanTopLevelChildren(inner: string): BodyBlock[] {
   const blocks: BodyBlock[] = [];
   let i = 0;
   const n = inner.length;

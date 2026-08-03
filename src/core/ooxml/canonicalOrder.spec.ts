@@ -82,3 +82,48 @@ describe("canonicalizeStyleChildren", () => {
     );
   });
 });
+
+describe("canonicalizeRunProps — comments, CDATA and malformed markup", () => {
+  test("a comment containing a closing tag no longer deletes the real elements around it", () => {
+    // Counterexample 1 from code review: a naive open/close depth counter reads
+    // the `</w:b>` INSIDE the comment as a real close, desynchronising depth and
+    // silently dropping <w:sz> and the <w:x> wrapper. The comment must survive
+    // (not be dropped), and a genuine reorder must still happen (<w:sz> moves
+    // ahead of it).
+    const input = `<w:b/><!-- </w:b> --><w:x><w:y/></w:x><w:sz w:val="20"/>`;
+    expect(canonicalizeRunProps(input)).toBe(
+      `<w:b/><w:sz w:val="20"/><!-- </w:b> --><w:x><w:y/></w:x>`,
+    );
+  });
+
+  test("a comment containing an unclosed-looking tag no longer causes a silent no-op", () => {
+    // Counterexample 2 from code review: the naive scanner reads `<w:evil>`
+    // INSIDE the comment as a real unclosed open tag, which swallows the rest
+    // of the fragment and makes `elements.length <= 1` return the input
+    // unchanged — even though <w:rFonts> should have moved to the front. A
+    // silent no-op here is as bad as corruption: the caller believes it
+    // reordered and Word still rejects the file.
+    const input = `<w:b/><!-- <w:evil> --><w:i/><w:rFonts w:ascii="Arial"/>`;
+    expect(canonicalizeRunProps(input)).toBe(
+      `<w:rFonts w:ascii="Arial"/><w:b/><w:i/><!-- <w:evil> -->`,
+    );
+  });
+
+  test("a CDATA section is treated as opaque content, not dropped, not mistaken for a tag", () => {
+    const input = `<w:sz w:val="20"/><![CDATA[<w:b/>]]><w:rFonts w:ascii="Arial"/>`;
+    expect(canonicalizeRunProps(input)).toBe(
+      `<w:rFonts w:ascii="Arial"/><w:sz w:val="20"/><![CDATA[<w:b/>]]>`,
+    );
+  });
+
+  test("throws on a stray closing tag instead of silently dropping the real elements after it", () => {
+    // The old depth counter went negative on `</w:b>` and never recovered, so
+    // <w:i> and <w:u> vanished from the output with no error at all.
+    expect(() => canonicalizeRunProps(`</w:b><w:i/><w:u/>`)).toThrow(/malformed markup/);
+  });
+
+  test("throws on an element whose matching close is never found", () => {
+    // <w:x> never closes; the trailing <w:y/> is its (equally unclosed) child.
+    expect(() => canonicalizeRunProps(`<w:b/><w:x><w:y/>`)).toThrow(/unclosed element/);
+  });
+});
