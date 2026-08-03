@@ -14,6 +14,13 @@ describe("buildRFonts", () => {
       `<w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial" w:eastAsia="SimSun" w:cstheme="minorBidi"/>`,
     );
   });
+
+  test("preserves attributes quoted with single quotes", () => {
+    const existing = `<w:rFonts w:ascii="Calibri" w:hint='cs' w:cstheme='minorBidi'/>`;
+    expect(buildRFonts("Arial", existing)).toBe(
+      `<w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:cs="Arial" w:cstheme="minorBidi" w:hint="cs"/>`,
+    );
+  });
 });
 
 describe("propTagsFor", () => {
@@ -76,5 +83,45 @@ describe("mergeRunProps", () => {
 
   test("normalises a colour to uppercase hex without '#'", () => {
     expect(mergeRunProps("", { color: "#00ff00" })).toBe(`<w:color w:val="00FF00"/>`);
+  });
+
+  test("preserves eastAsia/cstheme through a PAIRED existing rFonts, not just a self-closing one", () => {
+    const out = mergeRunProps(
+      `<w:rFonts w:ascii="Calibri" w:eastAsia="SimSun" w:cstheme="minorBidi"></w:rFonts><w:rtl/>`,
+      { font: "Simplified Arabic" },
+    );
+    expect(out).toBe(
+      `<w:rFonts w:ascii="Simplified Arabic" w:hAnsi="Simplified Arabic" w:cs="Simplified Arabic"` +
+        ` w:eastAsia="SimSun" w:cstheme="minorBidi"/><w:rtl/>`,
+    );
+  });
+
+  test("throws on a non-finite or non-positive sizePt rather than writing invalid OOXML", () => {
+    expect(() => mergeRunProps("", { sizePt: -5 })).toThrow(/sizePt/);
+    expect(() => mergeRunProps("", { sizePt: NaN })).toThrow(/sizePt/);
+    expect(() => mergeRunProps("", { sizePt: Infinity })).toThrow(/sizePt/);
+    expect(() => mergeRunProps("", { sizePt: 0 })).toThrow(/sizePt/);
+  });
+
+  test("throws on a colour that is neither 6 hex digits nor the literal 'auto'", () => {
+    expect(() => mergeRunProps("", { color: "red" })).toThrow(/color/);
+    expect(() => mergeRunProps("", { color: "#0f0" })).toThrow(/color/);
+  });
+
+  test("accepts the literal 'auto' for colour, case-insensitively", () => {
+    expect(mergeRunProps("", { color: "auto" })).toBe(`<w:color w:val="auto"/>`);
+    expect(mergeRunProps("", { color: "AUTO" })).toBe(`<w:color w:val="auto"/>`);
+  });
+
+  test("propagates a malformed-markup throw from canonicalizeRunProps rather than swallowing it", () => {
+    expect(() => mergeRunProps("<w:b/></w:bCs>", { sizePt: 12 })).toThrow(
+      /malformed markup - unexpected "<\/w:bCs>"/,
+    );
+  });
+
+  test("propagates an unclosed-element throw from canonicalizeRunProps rather than swallowing it", () => {
+    expect(() => mergeRunProps("<w:foo><w:bar/>", { sizePt: 12 })).toThrow(
+      /unclosed element <w:foo>/,
+    );
   });
 });

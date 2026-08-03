@@ -46,7 +46,8 @@ export function buildRFonts(font: string, existing?: string): string {
   const kept: string[] = [];
   if (existing) {
     for (const attr of PRESERVED_RFONTS_ATTRS) {
-      const m = new RegExp(`\\s${attr}="([^"]*)"`).exec(existing);
+      // Word always double-quotes, but accept single quotes too.
+      const m = new RegExp(`\\s${attr}=["']([^"']*)["']`).exec(existing);
       if (m) kept.push(`${attr}="${m[1]}"`);
     }
   }
@@ -81,7 +82,13 @@ export function stripRunPropTags(rPrInner: string, tags: readonly string[]): str
  * and `w:u`.
  */
 export function mergeRunProps(rPrInner: string, props: RunProps): string {
-  const existingRFonts = /<w:rFonts(?=[\s/>])[^>]*\/>/.exec(rPrInner)?.[0];
+  // Match the OPENING tag only, up to its own `>` - works whether the element
+  // turns out to be self-closing (`<w:rFonts .../>`) or paired
+  // (`<w:rFonts ...>...</w:rFonts>`). A `\/>`-only match (the previous bug)
+  // returns undefined for a paired element, and buildRFonts then has nothing
+  // to preserve from - the same silent-formatting-loss class this feature
+  // exists to fix.
+  const existingRFonts = /<w:rFonts(?=[\s/>])[^>]*>/.exec(rPrInner)?.[0];
   let body = rPrInner;
   const added: string[] = [];
 
@@ -90,6 +97,14 @@ export function mergeRunProps(rPrInner: string, props: RunProps): string {
     added.push(buildRFonts(props.font, existingRFonts));
   }
   if (props.sizePt !== undefined) {
+    // w:sz/w:szCs are ST_HpsMeasure (unsigned half-points) - a negative,
+    // zero, NaN or Infinite value would be schema-invalid OOXML that Word
+    // refuses to open. Fail loudly rather than writing it.
+    if (!Number.isFinite(props.sizePt) || props.sizePt <= 0) {
+      throw new Error(
+        `runProps.mergeRunProps: sizePt must be a finite number of points greater than 0, got ${props.sizePt}`,
+      );
+    }
     body = stripRunPropTags(body, RUN_PROP_TAGS.sizePt);
     const halfPoints = Math.round(props.sizePt * 2);
     added.push(`<w:sz w:val="${halfPoints}"/><w:szCs w:val="${halfPoints}"/>`);
@@ -103,8 +118,21 @@ export function mergeRunProps(rPrInner: string, props: RunProps): string {
     if (props.italic) added.push(`<w:i/><w:iCs/>`);
   }
   if (props.color !== undefined) {
+    // w:color is ST_HexColor: exactly 6 hex digits, or the literal "auto" -
+    // anything else is schema-invalid OOXML.
+    const stripped = props.color.replace(/^#/, "");
+    let colorVal: string;
+    if (/^[0-9a-fA-F]{6}$/.test(stripped)) {
+      colorVal = stripped.toUpperCase();
+    } else if (/^auto$/i.test(props.color)) {
+      colorVal = "auto";
+    } else {
+      throw new Error(
+        `runProps.mergeRunProps: color must be 6 hex digits (optionally prefixed with '#') or the literal "auto", got ${JSON.stringify(props.color)}`,
+      );
+    }
     body = stripRunPropTags(body, RUN_PROP_TAGS.color);
-    added.push(`<w:color w:val="${props.color.replace(/^#/, "").toUpperCase()}"/>`);
+    added.push(`<w:color w:val="${colorVal}"/>`);
   }
 
   return canonicalizeRunProps(`${body}${added.join("")}`);
