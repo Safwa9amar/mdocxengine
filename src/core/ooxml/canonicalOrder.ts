@@ -75,8 +75,20 @@ const EOF_PROBE = "\u0000CANONICAL_ORDER_EOF_PROBE\u0000";
  * structure the input doesn't actually have, and a caller cannot tell
  * "nothing needed reordering" from "this could not be parsed" unless the two
  * are reported differently.
+ *
+ * @throws {Error} on a stray closing tag with no matching open, on an element
+ * whose matching close is never found before the fragment ends, or on a raw
+ * NUL byte in `fragment` (illegal in XML 1.0 content, and reserved here for
+ * the internal EOF probe). Callers doing PER-RUN work over a whole document
+ * must catch per run rather than letting one malformed run abort the entire
+ * document.
  */
 export function splitTopLevelElements(fragment: string): string[] {
+  if (fragment.includes("\u0000")) {
+    throw new Error(
+      "canonicalOrder.splitTopLevelElements: fragment contains a raw NUL byte, which is illegal in XML 1.0 content - refusing input rather than risking a silent collision with the internal EOF probe",
+    );
+  }
   const blocks = scanTopLevelChildren(fragment + EOF_PROBE);
   const out: string[] = [];
   for (const block of blocks) {
@@ -130,6 +142,11 @@ export function elementName(element: string): string {
  * {@link splitTopLevelElements} for exactly which inputs that covers and why
  * throwing (rather than returning `fragment` unchanged) is the chosen
  * behaviour for them.
+ *
+ * @throws {Error} whenever {@link splitTopLevelElements} would - see there
+ * for the exact conditions. Callers doing PER-RUN work over a whole document
+ * must catch per run rather than letting one malformed run abort the entire
+ * document.
  */
 export function canonicalizeFragment(fragment: string, order: readonly string[]): string {
   const elements = splitTopLevelElements(fragment);
@@ -145,10 +162,24 @@ export function canonicalizeFragment(fragment: string, order: readonly string[])
     .join("");
 }
 
-/** Sort the INNER XML of a `<w:rPr>` into `CT_RPr` order. */
+/**
+ * Sort the INNER XML of a `<w:rPr>` into `CT_RPr` order.
+ *
+ * @throws {Error} on malformed markup - see {@link splitTopLevelElements}.
+ * Callers that run this PER RUN over a whole document (as the tasks after
+ * this one do) must catch per run rather than letting one bad run abort the
+ * whole document.
+ */
 export const canonicalizeRunProps = (rPrInner: string): string =>
   canonicalizeFragment(rPrInner, CT_RPR_ORDER);
 
-/** Sort the INNER XML of a `<w:style>` into `CT_Style` order. */
+/**
+ * Sort the INNER XML of a `<w:style>` into `CT_Style` order.
+ *
+ * @throws {Error} on malformed markup - see {@link splitTopLevelElements}.
+ * Callers that run this PER RUN over a whole document (as the tasks after
+ * this one do) must catch per run rather than letting one bad run abort the
+ * whole document.
+ */
 export const canonicalizeStyleChildren = (styleInner: string): string =>
   canonicalizeFragment(styleInner, CT_STYLE_ORDER);

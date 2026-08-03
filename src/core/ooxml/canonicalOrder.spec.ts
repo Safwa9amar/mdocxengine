@@ -126,4 +126,11 @@ describe("canonicalizeRunProps — comments, CDATA and malformed markup", () => 
     // <w:x> never closes; the trailing <w:y/> is its (equally unclosed) child.
     expect(() => canonicalizeRunProps(`<w:b/><w:x><w:y/>`)).toThrow(/unclosed element/);
   });
+
+  test("throws on a raw NUL in the input instead of colliding with the internal EOF probe", () => {
+    // XML 1.0 forbids a raw NUL in content, so this can only arise from
+    // already-invalid input - but silently dropping the colliding text (the
+    // old behaviour) would be the one quiet failure in an otherwise loud module.
+    expect(() => canonicalizeRunProps(`<w:b/>\u0000<w:sz w:val="20"/>`)).toThrow(/NUL/);
+  });
 });
