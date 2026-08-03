@@ -57,4 +57,18 @@ describe("FormattingManager.applyToXml", () => {
     expect(xml).toBe(SAMPLE);
     expect(result.applied).toEqual([]);
   });
+
+  test("applyFont INSERTS on a document with no rFonts — the norm-profile no-op bug", () => {
+    const xml = `<w:document><w:body><w:p><w:r><w:t>x</w:t></w:r></w:p></w:body></w:document>`;
+    const { xml: out, result } = FormattingManager.applyToXml(xml, { font: "Simplified Arabic" });
+    expect(result.applied).toContain("font");
+    expect(out).toContain(`w:cs="Simplified Arabic"`);
+  });
+
+  test("applyFontSize INSERTS sz and szCs where absent", () => {
+    const xml = `<w:document><w:body><w:p><w:r><w:t>x</w:t></w:r></w:p></w:body></w:document>`;
+    const { xml: out } = FormattingManager.applyToXml(xml, { fontSizePt: 16 });
+    expect(out).toContain(`<w:sz w:val="32"/>`);
+    expect(out).toContain(`<w:szCs w:val="32"/>`);
+  });
 });

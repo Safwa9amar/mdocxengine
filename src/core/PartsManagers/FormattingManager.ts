@@ -1,5 +1,6 @@
 import { ZipManager } from "@/utils/ZipManager";
 import { cmToTwips } from "@/core/PartsManagers/PageLayoutManager";
+import { applyPropsToRuns } from "@/core/PartsManagers/TextStyleManager";
 
 const DOCUMENT_PATH = "word/document.xml";
 
@@ -40,22 +41,20 @@ export interface FormattingResult {
   skipped: string[];
 }
 
-const ptToHalfPoints = (pt: number): number => pt * 2;
 const spacingTo240ths = (multiplier: number): number => Math.round(multiplier * 240);
 
 function applyFont(xml: string, font: string): string {
-  // Replace every self-closing <w:rFonts .../> so ascii/hAnsi/cs all use `font`.
-  return xml.replace(
-    /<w:rFonts\b[^/]*\/>/g,
-    `<w:rFonts w:ascii="${font}" w:hAnsi="${font}" w:cs="${font}"/>`,
-  );
+  // Route through the run-props primitive so this INSERTS w:rFonts on runs
+  // that have none, rather than only rewriting ones that already exist (the
+  // old regex-replace silently no-op'd against the seed thesis, which has
+  // zero rFonts anywhere).
+  return applyPropsToRuns(xml, { font }).xml;
 }
 
 function applyFontSize(xml: string, fontSizePt: number): string {
-  const halfPts = ptToHalfPoints(fontSizePt);
-  return xml
-    .replace(/<w:sz\s+w:val="\d+"/g, `<w:sz w:val="${halfPts}"`)
-    .replace(/<w:szCs\s+w:val="\d+"/g, `<w:szCs w:val="${halfPts}"`);
+  // Same reasoning as applyFont: INSERT w:sz/w:szCs where absent instead of
+  // only rewriting existing ones.
+  return applyPropsToRuns(xml, { sizePt: fontSizePt }).xml;
 }
 
 function applySpacing(xml: string, lineSpacing: number): string {
