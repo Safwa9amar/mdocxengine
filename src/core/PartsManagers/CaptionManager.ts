@@ -30,7 +30,7 @@ const TABLE_OF_FIGURES_STYLE = {
  * Word's built-in "Caption" paragraph style.
  * Bold, 9 pt, dark blue-grey (#44546A), 6 pt spacing before and after.
  */
-const CAPTION_PARA_STYLE = {
+export const CAPTION_PARA_STYLE = {
   $: { "w:type": "paragraph", "w:styleId": "Caption" },
   "w:name":      { $: { "w:val": "caption" } },
   "w:basedOn":   { $: { "w:val": "Normal" } },
