@@ -59,26 +59,6 @@ export function upsertSectPrReference(sectPrXml: string, kind: SectPrRefKind, ty
 }
 
 /**
- * Every CT_SectPr child that must FOLLOW `<w:pgNumType>` (ECMA-376 §17.6.17).
- * `<w:pgNumType>` is inserted before the first of these that is present, so a
- * section can restart/reformat its page numbers without Word rejecting the
- * file for out-of-order section properties.
- */
-const AFTER_PG_NUM_TYPE = [
-  "w:cols",
-  "w:formProt",
-  "w:vAlign",
-  "w:noEndnote",
-  "w:titlePg",
-  "w:textDirection",
-  "w:bidi",
-  "w:rtlGutter",
-  "w:docGrid",
-  "w:printerSettings",
-  "w:sectPrChange",
-];
-
-/**
  * Insert (or replace) this section's `<w:pgNumType>` — the page-number FORMAT
  * (`w:fmt`: decimal, lowerRoman, …) and RESTART value (`w:start`).
  *
@@ -115,14 +95,7 @@ export function upsertSectPrPageNumbering(
     .slice(openEnd, close)
     .replace(/<w:pgNumType\b[^>]*\/>|<w:pgNumType\b[\s\S]*?<\/w:pgNumType>/g, "");
 
-  // Schema order: sits after pgSz/pgMar/lnNumType…, before cols and the rest.
-  let at = inner.length;
-  for (const t of AFTER_PG_NUM_TYPE) {
-    const i = inner.search(new RegExp(`<${escRe(t)}\\b`));
-    if (i !== -1 && i < at) at = i;
-  }
-
-  return sectPrXml.slice(0, openEnd) + inner.slice(0, at) + tag + inner.slice(at) + sectPrXml.slice(close);
+  return sectPrXml.slice(0, openEnd) + insertBySchemaOrder(inner, "w:pgNumType", tag) + sectPrXml.slice(close);
 }
 
 /**
@@ -171,6 +144,45 @@ export function upsertSectPrVAlign(
     .slice(openEnd, close)
     .replace(/<w:vAlign\b[^>]*\/>|<w:vAlign\b[\s\S]*?<\/w:vAlign>/g, "");
   return sectPrXml.slice(0, openEnd) + insertBySchemaOrder(inner, "w:vAlign", tag) + sectPrXml.slice(close);
+}
+
+export interface SectPrPageBorderOptions {
+  style: "single" | "double" | "thick" | "dashed" | "dotted";
+  /** 6-hex, with or without a leading '#'. */
+  color: string;
+  /** Border width in POINTS; Word stores eighths of a point (w:sz). */
+  widthPt: number;
+  /** Distance from the page edge in points (w:space). Default 24. */
+  offsetPt?: number;
+}
+
+/** Insert (or replace) this section's `<w:pgBorders>` — a border around the
+ *  whole page on all four edges, measured from the page edge. This is the
+ *  `frame` divider family: a page border cannot be drawn with an image. */
+export function upsertSectPrPageBorders(sectPrXml: string, opts: SectPrPageBorderOptions): string {
+  const color = opts.color.replace(/^#/, "").toUpperCase();
+  const sz = Math.max(2, Math.round(opts.widthPt * 8));
+  const space = opts.offsetPt ?? 24;
+  const edge = (name: string) =>
+    `<w:${name} w:val="${escAttr(opts.style)}" w:sz="${sz}" w:space="${space}" w:color="${escAttr(color)}"/>`;
+  const tag =
+    `<w:pgBorders w:offsetFrom="page">` +
+    edge("top") + edge("left") + edge("bottom") + edge("right") +
+    `</w:pgBorders>`;
+
+  const m = /<w:sectPr\b[^>]*?(\/?)>/.exec(sectPrXml);
+  if (!m) return sectPrXml;
+  if (m[1] === "/") {
+    const openTag = m[0].slice(0, m[0].length - 2) + ">";
+    return sectPrXml.slice(0, m.index) + openTag + tag + "</w:sectPr>" + sectPrXml.slice(m.index + m[0].length);
+  }
+  const openEnd = m.index + m[0].length;
+  const close = sectPrXml.indexOf("</w:sectPr>", openEnd);
+  if (close === -1) return sectPrXml;
+  const inner = sectPrXml
+    .slice(openEnd, close)
+    .replace(/<w:pgBorders\b[^>]*\/>|<w:pgBorders\b[\s\S]*?<\/w:pgBorders>/g, "");
+  return sectPrXml.slice(0, openEnd) + insertBySchemaOrder(inner, "w:pgBorders", tag) + sectPrXml.slice(close);
 }
 
 // ─── Paragraph <w:pPr><w:sectPr> edits ───────────────────────────────────────

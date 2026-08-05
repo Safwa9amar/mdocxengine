@@ -7,6 +7,7 @@ import {
   editBodySectPr,
   removeSectPrReferenceFromDocument,
   upsertSectPrVAlign,
+  upsertSectPrPageBorders,
   SECTPR_ORDER,
 } from "./sectPr";
 
@@ -145,5 +146,69 @@ describe("upsertSectPrVAlign", () => {
       '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:bottom="1440"/></w:sectPr>';
     const out = upsertSectPrVAlign(sect, "bottom");
     expect(out.replace(/<w:vAlign[^>]*\/>/, "")).toBe(sect);
+  });
+});
+
+describe("upsertSectPrPageBorders", () => {
+  test("draws all four edges with offsetFrom=page", () => {
+    const out = upsertSectPrPageBorders("<w:sectPr></w:sectPr>", {
+      style: "double", color: "6B4F2A", widthPt: 3,
+    });
+    expect(out).toContain('<w:pgBorders w:offsetFrom="page">');
+    for (const edge of ["top", "left", "bottom", "right"]) {
+      expect(out).toMatch(new RegExp(`<w:${edge} w:val="double" w:sz="24" w:space="24" w:color="6B4F2A"/>`));
+    }
+  });
+
+  test("width is stored in EIGHTHS of a point, clamped to a minimum of 2", () => {
+    expect(upsertSectPrPageBorders("<w:sectPr/>", { style: "single", color: "000000", widthPt: 1.5 }))
+      .toContain('w:sz="12"');
+    expect(upsertSectPrPageBorders("<w:sectPr/>", { style: "single", color: "000000", widthPt: 0.1 }))
+      .toContain('w:sz="2"');
+  });
+
+  test("colour is normalised: leading # stripped, uppercased", () => {
+    expect(upsertSectPrPageBorders("<w:sectPr/>", { style: "single", color: "#6b4f2a", widthPt: 1 }))
+      .toContain('w:color="6B4F2A"');
+  });
+
+  test("offsetPt overrides the default space of 24", () => {
+    expect(upsertSectPrPageBorders("<w:sectPr/>", { style: "single", color: "000000", widthPt: 1, offsetPt: 12 }))
+      .toContain('w:space="12"');
+  });
+
+  test("replaces an existing pgBorders (paired form) instead of duplicating", () => {
+    const existing =
+      '<w:sectPr><w:pgBorders w:offsetFrom="page"><w:top w:val="single" w:sz="8" w:space="24" w:color="FF0000"/></w:pgBorders></w:sectPr>';
+    const out = upsertSectPrPageBorders(existing, { style: "double", color: "6B4F2A", widthPt: 3 });
+    expect(out.match(/<w:pgBorders/g)).toHaveLength(1);
+    expect(out).not.toContain("FF0000");
+  });
+
+  test("lands after pgMar and BEFORE pgNumType, cols and vAlign — schema order", () => {
+    const sect =
+      '<w:sectPr><w:pgMar w:top="1440"/><w:pgNumType w:fmt="decimal"/><w:cols w:space="708"/><w:vAlign w:val="center"/></w:sectPr>';
+    const out = upsertSectPrPageBorders(sect, { style: "single", color: "000000", widthPt: 1 });
+    const b = out.indexOf("<w:pgBorders");
+    expect(b).toBeGreaterThan(out.indexOf("<w:pgMar"));
+    expect(b).toBeLessThan(out.indexOf("<w:pgNumType"));
+    expect(b).toBeLessThan(out.indexOf("<w:cols"));
+    expect(b).toBeLessThan(out.indexOf("<w:vAlign"));
+  });
+
+  test("handles attributes on the sectPr open tag (both forms)", () => {
+    const paired = upsertSectPrPageBorders('<w:sectPr w:rsidR="00AB12CD"></w:sectPr>', {
+      style: "single", color: "000000", widthPt: 1,
+    });
+    expect(paired).toContain('<w:sectPr w:rsidR="00AB12CD">');
+    expect(paired).toContain("<w:pgBorders");
+    const selfClosing = upsertSectPrVAlign('<w:sectPr w:rsidR="00AB12CD"/>', "center");
+    expect(selfClosing).toBe('<w:sectPr w:rsidR="00AB12CD"><w:vAlign w:val="center"/></w:sectPr>');
+  });
+
+  test("every other byte is preserved", () => {
+    const sect = '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440"/></w:sectPr>';
+    const out = upsertSectPrPageBorders(sect, { style: "single", color: "000000", widthPt: 1 });
+    expect(out.replace(/<w:pgBorders[\s\S]*?<\/w:pgBorders>/, "")).toBe(sect);
   });
 });
