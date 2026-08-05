@@ -152,7 +152,11 @@ export interface SectPrPageBorderOptions {
   color: string;
   /** Border width in POINTS; Word stores eighths of a point (w:sz). */
   widthPt: number;
-  /** Distance from the page edge in points (w:space). Default 24. */
+  /**
+   * Distance from the page edge in points (w:space). Default 24. Word's own
+   * dialog only accepts 24–31 when measuring from the page edge; other values
+   * open fine but Word clamps them.
+   */
   offsetPt?: number;
 }
 
@@ -161,8 +165,8 @@ export interface SectPrPageBorderOptions {
  *  `frame` divider family: a page border cannot be drawn with an image. */
 export function upsertSectPrPageBorders(sectPrXml: string, opts: SectPrPageBorderOptions): string {
   const color = opts.color.replace(/^#/, "").toUpperCase();
-  const sz = Math.max(2, Math.round(opts.widthPt * 8));
-  const space = opts.offsetPt ?? 24;
+  const sz = Math.min(96, Math.max(2, Math.round(opts.widthPt * 8)));
+  const space = Math.round(opts.offsetPt ?? 24);
   const edge = (name: string) =>
     `<w:${name} w:val="${escAttr(opts.style)}" w:sz="${sz}" w:space="${space}" w:color="${escAttr(color)}"/>`;
   const tag =

@@ -8,6 +8,9 @@ import {
   removeParagraphSectPr,
   editSectPrWithinParagraph,
   editBodySectPr,
+  upsertSectPrVAlign,
+  upsertSectPrPageBorders,
+  type SectPrPageBorderOptions,
 } from "@/core/files/body/sectPr";
 
 const DOCUMENT_PATH = "word/document.xml";
@@ -298,6 +301,37 @@ export class SectionManager {
   ): Promise<void> {
     if (opts.format === undefined && opts.start === undefined) return;
     await this.editSectionSectPr(sectionIndex, (s) => upsertSectPrPageNumbering(s, opts));
+  }
+
+  /**
+   * Vertically align a section's page content (`<w:vAlign>`). "center" is what
+   * puts a divider page's title in the true middle of the page.
+   */
+  public async setSectionVerticalAlign(
+    sectionIndex: number,
+    vAlign: "top" | "center" | "both" | "bottom",
+  ): Promise<void> {
+    await this.editSectionSectPr(sectionIndex, (s) => upsertSectPrVAlign(s, vAlign));
+  }
+
+  /**
+   * Draw a page border on all four edges of ONE section (`<w:pgBorders>`) — the
+   * `frame` divider family. Colour must be 6-hex (leading '#' tolerated):
+   * ST_HexColor admits nothing else, and an invalid value here is the class of
+   * defect that trips Word's "unreadable content" repair dialog.
+   */
+  public async setSectionPageBorders(
+    sectionIndex: number,
+    opts: SectPrPageBorderOptions,
+  ): Promise<void> {
+    const hex = opts.color.replace(/^#/, "").toUpperCase();
+    if (!/^[0-9A-F]{6}$/.test(hex)) {
+      throw new Error(`setSectionPageBorders: color must be a 6-digit hex value, got '${opts.color}'`);
+    }
+    if (!Number.isFinite(opts.widthPt) || opts.widthPt <= 0) {
+      throw new Error(`setSectionPageBorders: widthPt must be a positive number, got '${opts.widthPt}'`);
+    }
+    await this.editSectionSectPr(sectionIndex, (s) => upsertSectPrPageBorders(s, opts));
   }
 
   /**

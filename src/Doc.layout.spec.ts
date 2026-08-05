@@ -257,4 +257,51 @@ describe("Doc layout / section verbs", () => {
     expect(blocks.length).toBe(before);
     expect(blocks[1].text).toBe("Healed edit");
   });
+
+  test("setSectionVerticalAlign centres a section's content vertically, in schema order", async () => {
+    const doc = await Doc.open(INPUT);
+    await doc.addHeading("Divider", 1);
+    const idx = (await doc.blocks()).length - 1;
+    await doc.startOnNewPage(idx);
+
+    await doc.setSectionVerticalAlign(idx, "center");
+
+    const xml = doc.engine.zip.getFileAsString("word/document.xml") ?? "";
+    expect(xml).toMatch(/<w:vAlign w:val="center"\/>/);
+    // The document may hold MULTIPLE sectPr (the section-break paragraph gets
+    // its own minimal one) — locate the sectPr that actually CONTAINS our
+    // vAlign, not just the first one in document order.
+    const vAlignPos = xml.indexOf("<w:vAlign");
+    const sect = xml.slice(xml.lastIndexOf("<w:sectPr", vAlignPos), xml.indexOf("</w:sectPr>", vAlignPos));
+    const mar = sect.indexOf("<w:pgMar");
+    if (mar !== -1) expect(sect.indexOf("<w:vAlign")).toBeGreaterThan(mar);
+  });
+
+  test("setSectionPageBorders draws four edges and sits BEFORE vAlign in the sequence", async () => {
+    const doc = await Doc.open(INPUT);
+    await doc.addHeading("Divider", 1);
+    const idx = (await doc.blocks()).length - 1;
+    await doc.startOnNewPage(idx);
+    await doc.setSectionVerticalAlign(idx, "center");
+    await doc.setSectionPageBorders(idx, { style: "double", color: "#6b4f2a", widthPt: 3 });
+
+    const xml = doc.engine.zip.getFileAsString("word/document.xml") ?? "";
+    // Same multi-sectPr caveat as above: anchor on the vAlign we just wrote so
+    // we slice the section that actually got the border, not the section-break
+    // paragraph's own (unrelated) sectPr.
+    const vAlignPos = xml.indexOf("<w:vAlign");
+    const sect = xml.slice(xml.lastIndexOf("<w:sectPr", vAlignPos), xml.indexOf("</w:sectPr>", vAlignPos));
+    for (const edge of ["top", "left", "bottom", "right"]) {
+      expect(sect).toMatch(new RegExp(`<w:${edge} w:val="double" w:sz="24" w:space="24" w:color="6B4F2A"/>`));
+    }
+    expect(sect.indexOf("<w:pgBorders")).toBeLessThan(sect.indexOf("<w:vAlign"));
+  });
+
+  test("setSectionPageBorders refuses a non-hex colour", async () => {
+    const doc = await Doc.open(INPUT);
+    await doc.addHeading("Divider", 1);
+    const idx = (await doc.blocks()).length - 1;
+    await expect(doc.setSectionPageBorders(idx, { style: "single", color: "red", widthPt: 1 }))
+      .rejects.toThrow(/6-digit hex/);
+  });
 });

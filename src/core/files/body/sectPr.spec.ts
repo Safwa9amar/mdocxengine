@@ -211,4 +211,14 @@ describe("upsertSectPrPageBorders", () => {
     const out = upsertSectPrPageBorders(sect, { style: "single", color: "000000", widthPt: 1 });
     expect(out.replace(/<w:pgBorders[\s\S]*?<\/w:pgBorders>/, "")).toBe(sect);
   });
+
+  test("sz is clamped to the schema ceiling of 96 eighths", () => {
+    expect(upsertSectPrPageBorders("<w:sectPr/>", { style: "single", color: "000000", widthPt: 20 }))
+      .toContain('w:sz="96"');
+  });
+
+  test("offsetPt is rounded to an integer", () => {
+    expect(upsertSectPrPageBorders("<w:sectPr/>", { style: "single", color: "000000", widthPt: 1, offsetPt: 12.5 }))
+      .toContain('w:space="13"');
+  });
 });

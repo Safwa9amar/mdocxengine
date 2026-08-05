@@ -349,6 +349,7 @@ export type {
 export { PAGE_SIZES, MARGIN_PRESETS, inchesToTwips, cmToTwips, twipsToInches, twipsToCm } from "./core/PartsManagers/PageLayoutManager";
 export { applyBodyPageLayout } from "./core/files/body/pageLayout";
 export type { BodyPageLayoutOpts } from "./core/files/body/pageLayout";
+export type { SectPrPageBorderOptions } from "./core/files/body/sectPr";
 export type {
   CaptionOptions,
   CaptionNumberingOptions,

@@ -29,6 +29,7 @@ import {
 } from "./core/files/body/OrderedBody";
 import { pixelsToEmu, type InlineImage } from "./core/PartsManagers/MediaManager";
 import type { SectionEntry, SectionHeaderFooterRef } from "./core/PartsManagers/SectionManager";
+import type { SectPrPageBorderOptions } from "./core/files/body/sectPr";
 import {
   TextStyleManager,
   expandTargets,
@@ -1142,6 +1143,34 @@ export class Doc {
     }
     await this.engine.sections.setSectionFooter(sectionIndex, relId, "default");
     if (oldRelId && oldRelId !== relId) await this.removeHeaderFooterByRel("footer", oldRelId);
+    return { sectionIndex, totalSections: sections.length };
+  }
+
+  /**
+   * Vertically align the content of the section CONTAINING the block at
+   * `blockIndex`. "center" places a divider page's title in the middle of the
+   * page instead of at the top. Call `startOnNewPage` on that block first so it
+   * is its own section, or this aligns whatever section it falls in.
+   */
+  async setSectionVerticalAlign(
+    blockIndex: number,
+    vAlign: "top" | "center" | "both" | "bottom",
+  ): Promise<SectionEditResult> {
+    const { sections, sectionIndex } = await this.resolveSection(blockIndex);
+    await this.engine.sections.setSectionVerticalAlign(sectionIndex, vAlign);
+    return { sectionIndex, totalSections: sections.length };
+  }
+
+  /**
+   * Draw a page border around the section CONTAINING the block at `blockIndex`
+   * (the `frame` divider family). Overwrites any border that section had.
+   */
+  async setSectionPageBorders(
+    blockIndex: number,
+    opts: SectPrPageBorderOptions,
+  ): Promise<SectionEditResult> {
+    const { sections, sectionIndex } = await this.resolveSection(blockIndex);
+    await this.engine.sections.setSectionPageBorders(sectionIndex, opts);
     return { sectionIndex, totalSections: sections.length };
   }
 
