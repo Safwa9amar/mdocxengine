@@ -167,7 +167,9 @@ export function upsertSectPrVAlign(
   const openEnd = m.index + m[0].length;
   const close = sectPrXml.indexOf("</w:sectPr>", openEnd);
   if (close === -1) return sectPrXml;
-  const inner = sectPrXml.slice(openEnd, close).replace(/<w:vAlign\b[^>]*\/>/g, "");
+  const inner = sectPrXml
+    .slice(openEnd, close)
+    .replace(/<w:vAlign\b[^>]*\/>|<w:vAlign\b[\s\S]*?<\/w:vAlign>/g, "");
   return sectPrXml.slice(0, openEnd) + insertBySchemaOrder(inner, "w:vAlign", tag) + sectPrXml.slice(close);
 }
 

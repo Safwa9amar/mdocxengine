@@ -126,6 +126,12 @@ describe("upsertSectPrVAlign", () => {
     expect(out.match(/<w:vAlign/g)).toHaveLength(1);
   });
 
+  test("also replaces a paired-tag vAlign", () => {
+    const out = upsertSectPrVAlign('<w:sectPr><w:vAlign w:val="top"></w:vAlign></w:sectPr>', "center");
+    expect(out).toContain('w:val="center"');
+    expect(out.match(/<w:vAlign/g)).toHaveLength(1);
+  });
+
   test("lands after pgMar/cols and before titlePg — CT_SectPr is an ordered sequence", () => {
     const sect =
       '<w:sectPr><w:pgSz w:w="11906"/><w:pgMar w:top="1440"/><w:cols w:space="708"/><w:titlePg/></w:sectPr>';
