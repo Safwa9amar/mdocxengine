@@ -125,6 +125,52 @@ export function upsertSectPrPageNumbering(
   return sectPrXml.slice(0, openEnd) + inner.slice(0, at) + tag + inner.slice(at) + sectPrXml.slice(close);
 }
 
+/**
+ * The child sequence of CT_SectPr, in ECMA-376 order. `w:sectPr` is a SEQUENCE,
+ * not a bag: children out of order make the document invalid even though Word
+ * tolerates it. Insertions scan this list for the first following sibling
+ * present and insert before it.
+ */
+export const SECTPR_ORDER: readonly string[] = [
+  "w:headerReference", "w:footerReference", "w:footnotePr", "w:endnotePr",
+  "w:type", "w:pgSz", "w:pgMar", "w:paperSrc", "w:pgBorders", "w:lnNumType",
+  "w:pgNumType", "w:cols", "w:formProt", "w:vAlign", "w:noEndnote", "w:titlePg",
+  "w:textDirection", "w:bidi", "w:rtlGutter", "w:docGrid", "w:printerSettings",
+  "w:sectPrChange",
+];
+
+/** Insert `tagXml` into a sectPr's inner XML at `tag`'s schema position: before
+ *  the first later-in-sequence sibling present, else at the end. */
+function insertBySchemaOrder(inner: string, tag: string, tagXml: string): string {
+  let at = inner.length;
+  for (const t of SECTPR_ORDER.slice(SECTPR_ORDER.indexOf(tag) + 1)) {
+    const i = inner.search(new RegExp(`<${escRe(t)}\\b`));
+    if (i !== -1 && i < at) at = i;
+  }
+  return inner.slice(0, at) + tagXml + inner.slice(at);
+}
+
+/** Insert (or replace) this section's `<w:vAlign>` — vertical alignment of the
+ *  page content. "center" is what puts a divider page's title in the middle of
+ *  the page rather than at the top. */
+export function upsertSectPrVAlign(
+  sectPrXml: string,
+  val: "top" | "center" | "both" | "bottom",
+): string {
+  const tag = `<w:vAlign w:val="${escAttr(val)}"/>`;
+  const m = /<w:sectPr\b[^>]*?(\/?)>/.exec(sectPrXml);
+  if (!m) return sectPrXml;
+  if (m[1] === "/") {
+    const openTag = m[0].slice(0, m[0].length - 2) + ">";
+    return sectPrXml.slice(0, m.index) + openTag + tag + "</w:sectPr>" + sectPrXml.slice(m.index + m[0].length);
+  }
+  const openEnd = m.index + m[0].length;
+  const close = sectPrXml.indexOf("</w:sectPr>", openEnd);
+  if (close === -1) return sectPrXml;
+  const inner = sectPrXml.slice(openEnd, close).replace(/<w:vAlign\b[^>]*\/>/g, "");
+  return sectPrXml.slice(0, openEnd) + insertBySchemaOrder(inner, "w:vAlign", tag) + sectPrXml.slice(close);
+}
+
 // ─── Paragraph <w:pPr><w:sectPr> edits ───────────────────────────────────────
 
 /** Insert/replace the `<w:sectPr>` child of a paragraph's `<w:pPr>` (creating pPr). */

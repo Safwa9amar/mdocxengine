@@ -6,6 +6,8 @@ import {
   removeParagraphSectPr,
   editBodySectPr,
   removeSectPrReferenceFromDocument,
+  upsertSectPrVAlign,
+  SECTPR_ORDER,
 } from "./sectPr";
 
 describe("upsertSectPrPageNumbering", () => {
@@ -92,5 +94,50 @@ describe("sectPr string helpers", () => {
     const out = removeSectPrReferenceFromDocument(doc, "header", "rId1");
     expect(out).not.toContain('r:id="rId1"');
     expect(out).toContain('r:id="rId2"'); // footer ref untouched
+  });
+});
+
+describe("SECTPR_ORDER", () => {
+  test("headerReference comes first and pgBorders precedes vAlign", () => {
+    expect(SECTPR_ORDER[0]).toBe("w:headerReference");
+    const borders = SECTPR_ORDER.indexOf("w:pgBorders");
+    const valign = SECTPR_ORDER.indexOf("w:vAlign");
+    expect(borders).toBeGreaterThan(-1);
+    expect(borders).toBeLessThan(valign);
+  });
+});
+
+describe("upsertSectPrVAlign", () => {
+  test("inserts vAlign into an empty sectPr", () => {
+    expect(upsertSectPrVAlign("<w:sectPr></w:sectPr>", "center")).toBe(
+      '<w:sectPr><w:vAlign w:val="center"/></w:sectPr>',
+    );
+  });
+
+  test("expands a self-closing sectPr", () => {
+    expect(upsertSectPrVAlign("<w:sectPr/>", "center")).toBe(
+      '<w:sectPr><w:vAlign w:val="center"/></w:sectPr>',
+    );
+  });
+
+  test("replaces an existing vAlign instead of duplicating", () => {
+    const out = upsertSectPrVAlign('<w:sectPr><w:vAlign w:val="top"/></w:sectPr>', "center");
+    expect(out).toContain('w:val="center"');
+    expect(out.match(/<w:vAlign/g)).toHaveLength(1);
+  });
+
+  test("lands after pgMar/cols and before titlePg — CT_SectPr is an ordered sequence", () => {
+    const sect =
+      '<w:sectPr><w:pgSz w:w="11906"/><w:pgMar w:top="1440"/><w:cols w:space="708"/><w:titlePg/></w:sectPr>';
+    const out = upsertSectPrVAlign(sect, "center");
+    expect(out.indexOf("<w:vAlign")).toBeGreaterThan(out.indexOf("<w:cols"));
+    expect(out.indexOf("<w:vAlign")).toBeLessThan(out.indexOf("<w:titlePg"));
+  });
+
+  test("every other byte is preserved", () => {
+    const sect =
+      '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:bottom="1440"/></w:sectPr>';
+    const out = upsertSectPrVAlign(sect, "bottom");
+    expect(out.replace(/<w:vAlign[^>]*\/>/, "")).toBe(sect);
   });
 });
