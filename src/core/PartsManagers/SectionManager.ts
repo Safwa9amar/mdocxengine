@@ -3,6 +3,7 @@ import AdmZip from "adm-zip";
 import { splitDocument, assembleDocument } from "@/core/files/body/OrderedBody";
 import {
   upsertSectPrReference,
+  upsertSectPrPageNumbering,
   upsertParagraphSectPr,
   removeParagraphSectPr,
   editSectPrWithinParagraph,
@@ -281,6 +282,22 @@ export class SectionManager {
     type: "default" | "first" | "even" = "default",
   ): Promise<void> {
     await this.editSectionSectPr(sectionIndex, (s) => upsertSectPrReference(s, "footer", type, relId));
+  }
+
+  /**
+   * Set ONE section's page-number format and/or restart value (`<w:pgNumType>`)
+   * — e.g. roman for the front matter, arabic restarting at 1 for the body.
+   *
+   * `FooterManager.formatPageNumbers` only ever reaches the BODY sectPr, so it
+   * cannot express per-section numbering; this can. Omit `start` to continue
+   * the previous section's sequence.
+   */
+  public async setSectionPageNumbering(
+    sectionIndex: number,
+    opts: { format?: string; start?: number },
+  ): Promise<void> {
+    if (opts.format === undefined && opts.start === undefined) return;
+    await this.editSectionSectPr(sectionIndex, (s) => upsertSectPrPageNumbering(s, opts));
   }
 
   /**

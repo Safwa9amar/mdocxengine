@@ -1,11 +1,50 @@
 import { describe, test, expect } from "vitest";
 import {
   upsertSectPrReference,
+  upsertSectPrPageNumbering,
   upsertParagraphSectPr,
   removeParagraphSectPr,
   editBodySectPr,
   removeSectPrReferenceFromDocument,
 } from "./sectPr";
+
+describe("upsertSectPrPageNumbering", () => {
+  test("inserts pgNumType AFTER pgSz/pgMar and BEFORE cols (CT_SectPr order)", () => {
+    const start = '<w:sectPr><w:pgSz w:w="11906"/><w:pgMar w:top="1440"/><w:cols w:space="708"/></w:sectPr>';
+    const out = upsertSectPrPageNumbering(start, { format: "lowerRoman", start: 1 });
+    expect(out).toBe(
+      '<w:sectPr><w:pgSz w:w="11906"/><w:pgMar w:top="1440"/>' +
+        '<w:pgNumType w:fmt="lowerRoman" w:start="1"/>' +
+        '<w:cols w:space="708"/></w:sectPr>',
+    );
+  });
+
+  test("appends when no later-ordered sibling is present", () => {
+    const out = upsertSectPrPageNumbering('<w:sectPr><w:pgSz w:w="1"/></w:sectPr>', { format: "decimal" });
+    expect(out).toBe('<w:sectPr><w:pgSz w:w="1"/><w:pgNumType w:fmt="decimal"/></w:sectPr>');
+  });
+
+  test("replaces an existing pgNumType rather than duplicating it", () => {
+    const start = '<w:sectPr><w:pgSz/><w:pgNumType w:fmt="lowerRoman" w:start="3"/><w:cols/></w:sectPr>';
+    const out = upsertSectPrPageNumbering(start, { format: "decimal", start: 1 });
+    expect((out.match(/w:pgNumType/g) ?? []).length).toBe(1);
+    expect(out).toContain('<w:pgNumType w:fmt="decimal" w:start="1"/>');
+    expect(out.indexOf("w:pgNumType")).toBeLessThan(out.indexOf("w:cols"));
+  });
+
+  test("omitting start leaves the section continuing the previous sequence", () => {
+    const out = upsertSectPrPageNumbering("<w:sectPr><w:cols/></w:sectPr>", { format: "decimal" });
+    expect(out).toBe('<w:sectPr><w:pgNumType w:fmt="decimal"/><w:cols/></w:sectPr>');
+    expect(out).not.toContain("w:start");
+  });
+
+  test("expands a self-closing sectPr, and no-ops with nothing to set", () => {
+    expect(upsertSectPrPageNumbering("<w:sectPr/>", { start: 5 })).toBe(
+      '<w:sectPr><w:pgNumType w:start="5"/></w:sectPr>',
+    );
+    expect(upsertSectPrPageNumbering("<w:sectPr/>", {})).toBe("<w:sectPr/>");
+  });
+});
 
 describe("sectPr string helpers", () => {
   test("upsertSectPrReference inserts a header ref at the start of the sectPr", () => {

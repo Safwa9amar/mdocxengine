@@ -58,6 +58,73 @@ export function upsertSectPrReference(sectPrXml: string, kind: SectPrRefKind, ty
   return sectPrXml.slice(0, openEnd) + ref + inner + sectPrXml.slice(close);
 }
 
+/**
+ * Every CT_SectPr child that must FOLLOW `<w:pgNumType>` (ECMA-376 §17.6.17).
+ * `<w:pgNumType>` is inserted before the first of these that is present, so a
+ * section can restart/reformat its page numbers without Word rejecting the
+ * file for out-of-order section properties.
+ */
+const AFTER_PG_NUM_TYPE = [
+  "w:cols",
+  "w:formProt",
+  "w:vAlign",
+  "w:noEndnote",
+  "w:titlePg",
+  "w:textDirection",
+  "w:bidi",
+  "w:rtlGutter",
+  "w:docGrid",
+  "w:printerSettings",
+  "w:sectPrChange",
+];
+
+/**
+ * Insert (or replace) this section's `<w:pgNumType>` — the page-number FORMAT
+ * (`w:fmt`: decimal, lowerRoman, …) and RESTART value (`w:start`).
+ *
+ * Unlike `FooterManager.formatPageNumbers`, which only ever writes the body
+ * sectPr, this targets ONE `<w:sectPr>` string, so front matter can number in
+ * roman while the body restarts at 1 in arabic. Omitting `start` leaves the
+ * section continuing from the previous one (Word's "Continue from previous").
+ */
+export function upsertSectPrPageNumbering(
+  sectPrXml: string,
+  opts: { format?: string; start?: number },
+): string {
+  const attrs = [
+    ...(opts.format ? [`w:fmt="${escAttr(opts.format)}"`] : []),
+    ...(opts.start !== undefined ? [`w:start="${escAttr(String(opts.start))}"`] : []),
+  ];
+  if (attrs.length === 0) return sectPrXml;
+  const tag = `<w:pgNumType ${attrs.join(" ")}/>`;
+
+  const m = /<w:sectPr\b[^>]*?(\/?)>/.exec(sectPrXml);
+  if (!m) return sectPrXml;
+
+  if (m[1] === "/") {
+    const openTag = m[0].slice(0, m[0].length - 2) + ">";
+    return sectPrXml.slice(0, m.index) + openTag + tag + "</w:sectPr>" + sectPrXml.slice(m.index + m[0].length);
+  }
+
+  const openEnd = m.index + m[0].length;
+  const close = sectPrXml.indexOf("</w:sectPr>", openEnd);
+  if (close === -1) return sectPrXml;
+
+  // Drop the existing one first so a re-apply replaces rather than duplicates.
+  const inner = sectPrXml
+    .slice(openEnd, close)
+    .replace(/<w:pgNumType\b[^>]*\/>|<w:pgNumType\b[\s\S]*?<\/w:pgNumType>/g, "");
+
+  // Schema order: sits after pgSz/pgMar/lnNumType…, before cols and the rest.
+  let at = inner.length;
+  for (const t of AFTER_PG_NUM_TYPE) {
+    const i = inner.search(new RegExp(`<${escRe(t)}\\b`));
+    if (i !== -1 && i < at) at = i;
+  }
+
+  return sectPrXml.slice(0, openEnd) + inner.slice(0, at) + tag + inner.slice(at) + sectPrXml.slice(close);
+}
+
 // ─── Paragraph <w:pPr><w:sectPr> edits ───────────────────────────────────────
 
 /** Insert/replace the `<w:sectPr>` child of a paragraph's `<w:pPr>` (creating pPr). */
