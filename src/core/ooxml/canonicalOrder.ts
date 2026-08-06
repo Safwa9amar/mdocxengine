@@ -25,6 +25,29 @@ export const CT_RPR_ORDER: readonly string[] = [
   "w:eastAsianLayout", "w:specVanish", "w:oMath",
 ];
 
+/**
+ * `CT_PPr` child sequence — `CT_PPrBase` (ECMA-376 Part 1 17.3.1.26) followed by
+ * `CT_PPr`'s own trailing children (`w:rPr`, `w:sectPr`, `w:pPrChange`).
+ *
+ * The order matters far more than it looks: `w:keepNext` / `w:keepLines` /
+ * `w:pageBreakBefore` sit near the FRONT (right after `w:pStyle`) while
+ * `w:widowControl` sits after `w:framePr`, and `w:bidi` / `w:jc` come much
+ * later. Appending a pagination toggle to an existing `<w:pPr>` that already
+ * carries `<w:bidi/>` and `<w:jc/>` — the normal state of an Arabic thesis
+ * paragraph — produces a sequence violation, and Word refuses the file.
+ *
+ * Mirrors the `CT_PPR` table the document doctor validates against (src/doctor).
+ */
+export const CT_PPR_ORDER: readonly string[] = [
+  "w:pStyle", "w:keepNext", "w:keepLines", "w:pageBreakBefore", "w:framePr", "w:widowControl",
+  "w:numPr", "w:suppressLineNumbers", "w:pBdr", "w:shd", "w:tabs", "w:suppressAutoHyphens",
+  "w:kinsoku", "w:wordWrap", "w:overflowPunct", "w:topLinePunct", "w:autoSpaceDE",
+  "w:autoSpaceDN", "w:bidi", "w:adjustRightInd", "w:snapToGrid", "w:spacing", "w:ind",
+  "w:contextualSpacing", "w:mirrorIndents", "w:suppressOverlap", "w:jc", "w:textDirection",
+  "w:textAlignment", "w:textboxTightWrap", "w:outlineLvl", "w:divId", "w:cnfStyle",
+  "w:rPr", "w:sectPr", "w:pPrChange",
+];
+
 /** `CT_Style` child sequence, ECMA-376 Part 1 17.7.4.17. */
 export const CT_STYLE_ORDER: readonly string[] = [
   "w:name", "w:aliases", "w:basedOn", "w:next", "w:link", "w:autoRedefine",
@@ -172,6 +195,16 @@ export function canonicalizeFragment(fragment: string, order: readonly string[])
  */
 export const canonicalizeRunProps = (rPrInner: string): string =>
   canonicalizeFragment(rPrInner, CT_RPR_ORDER);
+
+/**
+ * Sort the INNER XML of a `<w:pPr>` into `CT_PPr` order.
+ *
+ * @throws {Error} on malformed markup - see {@link splitTopLevelElements}.
+ * Callers doing PER-PARAGRAPH work over a whole document must catch per
+ * paragraph rather than letting one bad paragraph abort the document.
+ */
+export const canonicalizeParagraphProps = (pPrInner: string): string =>
+  canonicalizeFragment(pPrInner, CT_PPR_ORDER);
 
 /**
  * Sort the INNER XML of a `<w:style>` into `CT_Style` order.

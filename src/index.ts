@@ -397,7 +397,22 @@ export {
   type TextStyleTargetInput,
   type TargetReport,
 } from "./core/PartsManagers/TextStyleManager";
-export { type RunProps } from "./core/ooxml/runProps";
+export { type RunProps, mergeRunProps } from "./core/ooxml/runProps";
+// Single-paragraph OOXML surgery: Word's pagination properties (keep with next,
+// keep lines together, widow/orphan control, page break before) and DIRECT run
+// formatting for ONE paragraph — what "make THIS heading 48pt" needs, where a
+// style change would resize every heading in the thesis.
+export {
+  applyParagraphPagination,
+  applyRunPropsToParagraph,
+  isParagraphXml,
+  readParagraphPagination,
+  readParagraphProps,
+  updateParagraphProps,
+  type ParagraphPagination,
+  type ParagraphRunStyleResult,
+} from "./core/ooxml/paragraphProps";
+export { CT_PPR_ORDER, canonicalizeParagraphProps } from "./core/ooxml/canonicalOrder";
 export {
   applyStyleRunPropsToXml,
   buildParagraphStyleXml,

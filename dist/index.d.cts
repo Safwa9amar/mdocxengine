@@ -12,6 +12,36 @@ export declare interface AppendOptions {
 export declare function applyBodyPageLayout(documentXml: string, opts: BodyPageLayoutOpts): string;
 
 /**
+ * Apply pagination toggles to one paragraph's XML.
+ *
+ * `true` writes the bare element (`<w:keepNext/>`); `false` writes an EXPLICIT
+ * `w:val="0"` rather than deleting the element. Deleting would only fall back to
+ * whatever the paragraph's style says — and for a Heading style that is very
+ * often `keepNext` ON, so "stop keeping this heading with the next paragraph"
+ * would silently do nothing. `undefined` leaves the property alone.
+ */
+export declare function applyParagraphPagination(xml: string, opts: ParagraphPagination): string;
+
+/**
+ * Apply DIRECT run formatting to every run of ONE paragraph, plus its paragraph
+ * mark.
+ *
+ * Direct, not style-level, on purpose. Two reasons, both learned the hard way:
+ * an imported thesis carries its formatting on the RUNS, and direct run
+ * formatting beats a style in the OOXML cascade — so a style patch alone is
+ * invisible on exactly the documents students bring us; and the whole point of
+ * this function is to hit ONE paragraph, which a shared style cannot do.
+ *
+ * The paragraph mark is included so the size sticks to the ¶ itself: Word draws
+ * the empty line after a heading at the mark's size, and text typed at the end
+ * of the paragraph inherits it.
+ *
+ * @throws {Error} if `xml` is not a `<w:p>` element, or if `props` carries an
+ * invalid size or colour (see `runProps.mergeRunProps`).
+ */
+export declare function applyRunPropsToParagraph(xml: string, props: RunProps): ParagraphRunStyleResult;
+
+/**
  * Pure transform: apply `props` to the `<w:rPr>` of the `styleId` style inside a
  * `word/styles.xml` string, creating the style first when `ensure` is supplied
  * and it does not exist. Returns the rewritten XML plus whether the style was
@@ -102,6 +132,15 @@ export declare function buildParagraphStyleXml(styleId: string, name: string, op
     basedOn?: string;
     isDefault?: boolean;
 }): string;
+
+/**
+ * Sort the INNER XML of a `<w:pPr>` into `CT_PPr` order.
+ *
+ * @throws {Error} on malformed markup - see {@link splitTopLevelElements}.
+ * Callers doing PER-PARAGRAPH work over a whole document must catch per
+ * paragraph rather than letting one bad paragraph abort the document.
+ */
+export declare const canonicalizeParagraphProps: (pPrInner: string) => string;
 
 export declare interface CaptionEntry {
     /** The SEQ identifier the caption is numbered under (e.g. "Figure"). */
@@ -609,6 +648,21 @@ export declare class CrossReferenceManager {
      */
     createCrossRefRuns(bookmarkName: string, displayText?: string): Run_2[];
 }
+
+/**
+ * `CT_PPr` child sequence — `CT_PPrBase` (ECMA-376 Part 1 17.3.1.26) followed by
+ * `CT_PPr`'s own trailing children (`w:rPr`, `w:sectPr`, `w:pPrChange`).
+ *
+ * The order matters far more than it looks: `w:keepNext` / `w:keepLines` /
+ * `w:pageBreakBefore` sit near the FRONT (right after `w:pStyle`) while
+ * `w:widowControl` sits after `w:framePr`, and `w:bidi` / `w:jc` come much
+ * later. Appending a pagination toggle to an existing `<w:pPr>` that already
+ * carries `<w:bidi/>` and `<w:jc/>` — the normal state of an Arabic thesis
+ * paragraph — produces a sequence violation, and Word refuses the file.
+ *
+ * Mirrors the `CT_PPR` table the document doctor validates against (src/doctor).
+ */
+export declare const CT_PPR_ORDER: readonly string[];
 
 /**
  * Common French/English Word heading + body style aliases → canonical target
@@ -1711,6 +1765,9 @@ export declare interface InspectOptions {
     aggressive?: boolean;
 }
 
+/** True when `xml` is a `<w:p>` element this module can rewrite. */
+export declare function isParagraphXml(xml: string): boolean;
+
 export declare interface LineNumberingOptions {
     countBy?: number;
     start?: number;
@@ -2046,6 +2103,14 @@ export declare class MergeManager {
     /** Retarget <w:pStyle w:val="X"/> by name. */
     private applyStyleMap;
 }
+
+/**
+ * Merge `props` into `w:rPr` inner XML: strip the tags each named property owns,
+ * append the replacements, then canonicalise into `CT_RPr` order. Properties not
+ * named on `props` survive untouched — including `w:rtl`, `w:cs`, `w:highlight`
+ * and `w:u`.
+ */
+export declare function mergeRunProps(rPrInner: string, props: RunProps): string;
 
 export declare class MetadataManager {
     private zip;
@@ -2587,6 +2652,18 @@ export declare interface ParagraphOptions {
  */
 export declare function paragraphOutlineLevel(xml: string): number;
 
+/** Word's paragraph pagination toggles. `undefined` = leave as it is. */
+export declare interface ParagraphPagination {
+    /** Keep with next — the paragraph never ends a page alone, ahead of its body text. */
+    keepWithNext?: boolean;
+    /** Keep lines together — the paragraph is never split across two pages. */
+    keepLines?: boolean;
+    /** Widow/orphan control — never leave a single line of it on a page by itself. */
+    widowControl?: boolean;
+    /** Always start this paragraph on a new page. */
+    pageBreakBefore?: boolean;
+}
+
 /**
  * Interface for the properties of a paragraph.
  * These properties apply to the entire paragraph, such as style, alignment, and spacing.
@@ -2650,6 +2727,12 @@ export declare function paragraphPropsXml(paragraphXml: string): string;
  */
 export declare function paragraphRunPropsXml(paragraphXml: string): string;
 
+export declare interface ParagraphRunStyleResult {
+    xml: string;
+    /** How many runs were restyled. Zero means the paragraph holds no text runs. */
+    runs: number;
+}
+
 /** Extract the `w:val` of the paragraph's `<w:pStyle>`, or null. */
 export declare function paragraphStyleId(xml: string): string | null;
 
@@ -2694,6 +2777,22 @@ declare interface RawNumbering {
     abstractNums: any[];
     nums: any[];
 }
+
+/** Read back the effective (directly-set) pagination flags of a paragraph. */
+export declare function readParagraphPagination(xml: string): ParagraphPagination;
+
+/**
+ * Read a paragraph's `<w:pPr>` inner XML.
+ *
+ * Anchored to the paragraph's OPENING TAG rather than searching the whole
+ * string, because `w:pPr` — when present — is by schema the first child of
+ * `w:p`. A free search would happily find the `<w:pPr>` of a paragraph nested
+ * inside a text box (`w:txbxContent`) and rewrite the wrong one.
+ *
+ * Returns `null` when `xml` is not a paragraph element, and `""` when it is a
+ * paragraph with no properties of its own.
+ */
+export declare function readParagraphProps(xml: string): string | null;
 
 /** One entry from a `.rels` part. */
 export declare interface RelationshipEntry {
@@ -3962,6 +4061,20 @@ export declare const twipsToCm: (twips: number) => number;
 
 /** Convert twips to inches */
 export declare const twipsToInches: (twips: number) => number;
+
+/**
+ * Rewrite a paragraph's `<w:pPr>` through `mutate`, which receives the current
+ * inner XML ("" when the paragraph has no `w:pPr` yet) and returns the new one.
+ * The result is canonicalised into `CT_PPr` order and written back; a `w:pPr`
+ * is created (or dropped, if `mutate` empties it) as needed.
+ *
+ * The rest of the paragraph — every run, bookmark, hyperlink, field and
+ * drawing — is copied through byte for byte.
+ *
+ * @throws {Error} if `xml` is not a `<w:p>` element, or if the resulting
+ * `w:pPr` cannot be cleanly parsed (see `canonicalOrder.splitTopLevelElements`).
+ */
+export declare function updateParagraphProps(xml: string, mutate: (pPrInner: string) => string): string;
 
 declare type xmlFile = {
     fileName: string;
