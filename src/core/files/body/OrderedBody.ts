@@ -378,6 +378,35 @@ export function makeParagraphNode(text: string, styleId?: string, rtl?: boolean)
   return { kind: "paragraph", tag: "w:p", xml: makeParagraphXml(text, styleId, rtl) };
 }
 
+/** A `<w:sectPr>` living inside a `<w:pPr>` — a section break, never cloned. */
+const PPR_SECTPR_RE = /<w:sectPr\b[^>]*>[\s\S]*?<\/w:sectPr>|<w:sectPr\b[^>]*\/>/g;
+
+/**
+ * Build a `<w:p>` carrying `text` but wearing `templateXml`'s clothes: its whole
+ * `<w:pPr>` (style, alignment, indent, spacing, bidi, numbering) plus the run
+ * properties of its first text-bearing run.
+ *
+ * Use this — NOT `makeParagraphXml`/`makeStyledParagraphXml` — whenever a new
+ * paragraph is added beside existing content (split, range rewrite, AI insert).
+ * Rebuilding from a styleId alone only carries what the style sheet defines, and
+ * in an imported thesis that is usually nothing: the formatting lives on the
+ * runs. The result is a new paragraph that renders identically to the one it was
+ * derived from, instead of falling back to renderer defaults.
+ *
+ * The template's `<w:sectPr>` is dropped — cloning it would duplicate a section
+ * break and repaginate the document.
+ */
+export function makeParagraphXmlLike(templateXml: string, text: string): string {
+  const pPr = paragraphPropsXml(templateXml).replace(PPR_SECTPR_RE, "");
+  const rPr = paragraphRunPropsXml(templateXml);
+  return `<w:p>${pPr}<w:r>${rPr}<w:t xml:space="preserve">${escapeXmlText(text)}</w:t></w:r></w:p>`;
+}
+
+/** {@link makeParagraphXmlLike} as a `BodyBlock`. */
+export function makeParagraphNodeLike(templateXml: string, text: string): BodyBlock {
+  return { kind: "paragraph", tag: "w:p", xml: makeParagraphXmlLike(templateXml, text) };
+}
+
 /** Options for {@link makeStyledParagraphXml} — a fully-formatted single-run paragraph. */
 export interface StyledParagraphOptions {
   styleId?: string;
@@ -676,7 +705,61 @@ export function paragraphIsBold(xml: string): boolean {
 
 // ─── Paragraph text replacement (run-preserving where it matters) ────────────
 
-const EMBED_RE = /<w:(?:drawing|pict|object)\b/;
+// Content a paragraph carries that is NOT reachable through `<w:t>`, and that a
+// naive "replace the runs" rewrite would therefore delete without trace.
+// `m:oMath` belongs here for the same reason a picture does: an equation's
+// characters live in `<m:t>`, so `paragraphText` reports the paragraph as empty
+// (or as just its trailing "(II.1)" tab run) and rewriting it from that text
+// dropped the whole equation — 108 of them in one real thesis.
+const EMBED_RE = /<(?:w:(?:drawing|pict|object)|m:oMath(?:Para)?)\b/;
+
+/** First `<w:rPr>…</w:rPr>` in `xml`, or "" (a self-closing `<w:rPr/>` = none). */
+function firstRunProps(xml: string): string {
+  const start = xml.indexOf("<w:rPr");
+  if (start === -1) return "";
+  const openEnd = endOfTag(xml, start);
+  if (isSelfClosing(xml, start, openEnd)) return "";
+  const close = xml.indexOf("</w:rPr>", openEnd);
+  return close === -1 ? "" : xml.slice(start, close + "</w:rPr>".length);
+}
+
+/**
+ * The `<w:pPr>…</w:pPr>` substring of a paragraph — style, alignment, indent,
+ * spacing, bidi, numbering — or "" when it has none.
+ */
+export function paragraphPropsXml(paragraphXml: string): string {
+  const openEnd = paragraphXml.indexOf(">") + 1;
+  const closeStart = paragraphXml.lastIndexOf("</w:p>");
+  const inner = paragraphXml.slice(openEnd, closeStart === -1 ? paragraphXml.length : closeStart);
+  if (!/^\s*<w:pPr\b/.test(inner)) return "";
+  const start = inner.indexOf("<w:pPr");
+  const openEnd2 = endOfTag(inner, start);
+  if (isSelfClosing(inner, start, openEnd2)) return inner.slice(start, openEnd2);
+  const close = inner.indexOf("</w:pPr>", openEnd2);
+  return close === -1 ? "" : inner.slice(start, close + "</w:pPr>".length);
+}
+
+/**
+ * The `<w:rPr>` that should style text (re)written into this paragraph: the
+ * properties of its first TEXT-BEARING run, falling back to the paragraph-mark
+ * properties inside `<w:pPr>` — the same source Word uses for newly typed text.
+ *
+ * This is what keeps an edited paragraph looking like its neighbours. Imported
+ * theses carry their formatting almost entirely at run level — `<w:rFonts
+ * w:cs="Times New Roman" w:hint="cs"/>` and `<w:rtl/>` for Arabic, plus
+ * `w:sz`/`w:szCs`/`w:b` — and `word/styles.xml` frequently has an empty
+ * `docDefaults`, so a run emitted WITHOUT these falls back to whatever the
+ * renderer defaults to: wrong face, wrong size, and (because `w:lineRule="auto"`
+ * scales with font size) visibly tighter lines than the paragraphs around it.
+ */
+export function paragraphRunPropsXml(paragraphXml: string): string {
+  for (const run of paragraphXml.match(RUN_RE) || []) {
+    if (!/<w:t[\s>/]/.test(run)) continue; // only runs that carry text
+    const rPr = firstRunProps(run);
+    if (rPr) return rPr;
+  }
+  return firstRunProps(paragraphPropsXml(paragraphXml));
+}
 
 /**
  * Replace the text of a paragraph's XML string IN PLACE (operates only on the
@@ -687,11 +770,41 @@ const EMBED_RE = /<w:(?:drawing|pict|object)\b/;
  *    only the text inside the FIRST `<w:t>` (or append a text run after
  *    `<w:pPr>` if there is no `<w:t>`), leaving the drawing runs intact.
  *  - Otherwise (a plain text paragraph): preserve `<w:pPr>...</w:pPr>` if
- *    present and replace ALL `<w:r>...</w:r>` runs with a single
- *    `<w:r><w:t xml:space="preserve">ESCAPED</w:t></w:r>`.
+ *    present and replace ALL `<w:r>...</w:r>` runs with a single run that
+ *    CARRIES THE ORIGINAL RUN PROPERTIES — `<w:r>RPR<w:t
+ *    xml:space="preserve">ESCAPED</w:t></w:r>`. Dropping the `<w:rPr>` here is
+ *    what made an inline/AI edit render in the wrong font and line height while
+ *    its untouched neighbours stayed correct; see {@link paragraphRunPropsXml}.
  */
+/**
+ * Split a paragraph into `<w:p …>` / inner / `</w:p>`, NORMALISING a
+ * self-closing `<w:p …/>` into an open+close pair.
+ *
+ * Word writes an empty paragraph as `<w:p w:rsidR="…"/>` — extremely common, one
+ * per blank line. Locating the end of the open tag with `indexOf(">")` finds the
+ * `>` of `/>` on such a paragraph, so anything appended "inside" it actually
+ * lands AFTER it, as a sibling. At body level that means a bare `<w:r>` next to
+ * the paragraphs — invalid (a run is not block-level content), and Word refuses
+ * to open the document at all. It also loses the edit: the text is no longer in
+ * any paragraph.
+ */
+function splitParagraph(paragraphXml: string): { head: string; inner: string; tail: string } {
+  const openEnd = endOfTag(paragraphXml, 0);
+  if (isSelfClosing(paragraphXml, 0, openEnd)) {
+    // `<w:p a="b"/>` → head `<w:p a="b">`, no inner, tail `</w:p>`.
+    return { head: paragraphXml.slice(0, openEnd).replace(/\s*\/>$/, ">"), inner: "", tail: "</w:p>" };
+  }
+  const closeStart = paragraphXml.lastIndexOf("</w:p>");
+  return {
+    head: paragraphXml.slice(0, openEnd),
+    inner: paragraphXml.slice(openEnd, closeStart === -1 ? paragraphXml.length : closeStart),
+    tail: closeStart === -1 ? "</w:p>" : paragraphXml.slice(closeStart),
+  };
+}
+
 export function setParagraphText(paragraphXml: string, text: string): string {
   const escaped = escapeXmlText(text);
+  const rPr = paragraphRunPropsXml(paragraphXml);
 
   if (EMBED_RE.test(paragraphXml)) {
     // Image/object paragraph — never strip runs. Edit the first <w:t> only.
@@ -703,27 +816,26 @@ export function setParagraphText(paragraphXml: string, text: string): string {
       return paragraphXml.slice(0, tMatch.index) + replacement + paragraphXml.slice(tMatch.index + full.length);
     }
     // No <w:t> at all — append a text run after </w:pPr> (or after <w:p...>).
-    const run = `<w:r><w:t xml:space="preserve">${escaped}</w:t></w:r>`;
+    const run = `<w:r>${rPr}<w:t xml:space="preserve">${escaped}</w:t></w:r>`;
     const pPrEnd = paragraphXml.indexOf("</w:pPr>");
     if (pPrEnd !== -1) {
       const at = pPrEnd + "</w:pPr>".length;
       return paragraphXml.slice(0, at) + run + paragraphXml.slice(at);
     }
-    // Insert right after the <w:p ...> open tag.
-    const openEnd = paragraphXml.indexOf(">") + 1;
-    return paragraphXml.slice(0, openEnd) + run + paragraphXml.slice(openEnd);
+    // Insert right after the <w:p ...> open tag — via splitParagraph, so a
+    // self-closing paragraph becomes a real open/close pair instead of having
+    // the run appended outside it.
+    const { head, inner, tail } = splitParagraph(paragraphXml);
+    return `${head}${run}${inner}${tail}`;
   }
 
-  // Plain text paragraph: keep <w:pPr> (style/bidi/alignment), replace runs.
-  const newRun = `<w:r><w:t xml:space="preserve">${escaped}</w:t></w:r>`;
+  // Plain text paragraph: keep <w:pPr> (style/bidi/alignment) AND the original
+  // run properties (font/size/bold/colour + the cs/rtl twins), replace runs.
+  const newRun = `<w:r>${rPr}<w:t xml:space="preserve">${escaped}</w:t></w:r>`;
 
-  // Find the paragraph's inner content (between <w:p ...> and </w:p>).
-  const openEnd = paragraphXml.indexOf(">") + 1;
-  const closeStart = paragraphXml.lastIndexOf("</w:p>");
-  const head = paragraphXml.slice(0, openEnd); // `<w:p ...>`
-  const tail = closeStart === -1 ? "" : paragraphXml.slice(closeStart); // `</w:p>`
-  const innerEnd = closeStart === -1 ? paragraphXml.length : closeStart;
-  const inner = paragraphXml.slice(openEnd, innerEnd);
+  // Find the paragraph's inner content (between <w:p ...> and </w:p>), turning a
+  // self-closing empty paragraph into a real open/close pair first.
+  const { head, inner, tail } = splitParagraph(paragraphXml);
 
   // Preserve a leading <w:pPr>...</w:pPr> if present.
   const pPrMatch = /^(\s*)<w:pPr\b/.exec(inner);

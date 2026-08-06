@@ -11,6 +11,26 @@ export declare interface AppendOptions {
 
 export declare function applyBodyPageLayout(documentXml: string, opts: BodyPageLayoutOpts): string;
 
+/**
+ * Pure transform: apply `props` to the `<w:rPr>` of the `styleId` style inside a
+ * `word/styles.xml` string, creating the style first when `ensure` is supplied
+ * and it does not exist. Returns the rewritten XML plus whether the style was
+ * created and whether it ended up changed.
+ *
+ * The seed `thesis-base.docx` defines neither `Normal` nor `Caption`, so the
+ * create path is the ordinary one, not an error path.
+ *
+ * @throws if the style fragment is malformed markup (propagated from
+ * `canonicalizeRunProps`). This operates on ONE small styles fragment, not
+ * per-run, so failing loudly is correct — a broken `styles.xml` must not be
+ * half-applied. Callers doing PER-RUN work must catch per run instead.
+ */
+export declare function applyStyleRunPropsToXml(stylesXml: string, styleId: string, props: RunProps, ensure?: EnsureStyleSpec): {
+    xml: string;
+    created: boolean;
+    updated: boolean;
+};
+
 export declare interface AppProperties {
     application?: string;
     pages?: number;
@@ -77,120 +97,204 @@ declare type BreakType = "nextPage" | "evenPage" | "oddPage";
 /** Reassemble from a SplitDocument (or its parts). */
 export declare function buildOrderedDoc(split: SplitDocument): string;
 
+/** Build a minimal, schema-ordered paragraph `<w:style>`. */
+export declare function buildParagraphStyleXml(styleId: string, name: string, opts?: {
+    basedOn?: string;
+    isDefault?: boolean;
+}): string;
+
 export declare interface CaptionEntry {
+    /** The SEQ identifier the caption is numbered under (e.g. "Figure"). */
     label: string;
+    /** The label as it READS in the document (e.g. "الشكل رقم"), "" if excluded. */
+    displayLabel: string;
+    /** The number currently shown by the field (Word recomputes on update). */
     number: string;
+    /** The caption text after the label and number. */
     text: string;
+    /** The caption's full visible text ("Figure 1 Site plan"). */
+    fullText: string;
+    /** Editable BLOCK index (the same index space as `document.getBlocks()`). */
+    blockIndex: number;
+    /** @deprecated Use {@link blockIndex}. Kept as an alias for older callers. */
     paragraphIndex: number;
+    /** Bookmark anchoring this caption, if it has one. */
+    bookmark: string | null;
+    /**
+     * True when the caption lives INSIDE the block at `blockIndex` (a table cell)
+     * rather than being that block itself — `blockIndex` then addresses the table.
+     */
+    inTable: boolean;
 }
+
+export declare type CaptionKind = "figure" | "table" | "equation";
 
 export declare class CaptionManager {
     private zip;
     private styles;
+    private doc;
     private stylesRegistered;
     constructor(zip: default_2);
     /** Register Caption + CaptionChar styles into styles.xml the first time. */
     private ensureStyles;
-    private readDocument;
-    private writeDocument;
-    private getBodyParagraphs;
+    /** Next free `w:id` for a bookmark, and a free `_Ref…` bookmark name. */
+    private nextBookmark;
     /**
-     * Build the SEQ field instruction string.
+     * A bookmark allocator that hands out a DISTINCT id/name on every call.
      *
-     * With chapter numbers:  SEQ Figure \s 1 \* ARABIC
-     * Without chapter numbers: SEQ Figure \* ARABIC
+     * {@link nextBookmark} re-reads document.xml each time, so a batch that mints
+     * many bookmarks before saving (the converter) would stamp the same
+     * `w:id`/`_Ref…` on all of them — duplicate bookmark names, and every
+     * cross-reference and list-of-figures entry pointing at the first one.
      */
-    private buildSeqInstr;
+    private bookmarkSeries;
     /**
-     * Build a STYLEREF field run array that emits the chapter number.
-     * Used only when includeChapterNumber = true.
+     * Build a caption paragraph the way Word writes one:
      *
-     * <w:r><w:fldChar begin/></w:r>
-     * <w:r><w:instrText> STYLEREF "Heading 1" \n </w:instrText></w:r>
-     * <w:r><w:fldChar separate/></w:r>
-     * <w:r><w:t>1</w:t></w:r>
-     * <w:r><w:fldChar end/></w:r>
+     *   <w:p><w:pPr><w:pStyle w:val="Caption"/></w:pPr>
+     *     <w:bookmarkStart .../>            ← so a list of figures / cross-ref can point here
+     *     <w:r><w:t>Figure</w:t></w:r><w:r><w:t xml:space="preserve"> </w:t></w:r>
+     *     <w:fldSimple w:instr=" STYLEREF 1 \s ">…</w:fldSimple><w:r><w:t>-</w:t></w:r>
+     *     <w:fldSimple w:instr=" SEQ Figure \* ARABIC \s 1 "><w:r><w:t>1</w:t></w:r></w:fldSimple>
+     *     <w:r><w:t xml:space="preserve"> </w:t></w:r><w:r><w:t>text</w:t></w:r>
+     *   <w:bookmarkEnd .../></w:p>
      */
-    private buildStyleRefRuns;
+    private buildCaptionXml;
     /**
-     * Build the complete set of <w:r> elements for one caption paragraph.
+     * Everything a caption paragraph holds AFTER its `<w:pPr>`: the bookmark, the
+     * label runs, the chapter STYLEREF, the SEQ field and the caption text.
      *
-     * Structure:
-     *   [label run]            "Figure " (unless excludeLabel)
-     *   [STYLEREF runs]        chapter number (if includeChapterNumber)
-     *   [separator run]        "-" (if includeChapterNumber)
-     *   [SEQ begin]
-     *   [SEQ instrText]
-     *   [SEQ separate]
-     *   [SEQ placeholder]      "1"
-     *   [SEQ end]
-     *   [text run]             " My caption text"
+     * Split out of {@link buildCaptionXml} because {@link convertTextCaptions}
+     * needs the same content inside a paragraph that ALREADY exists — it keeps the
+     * student's own `<w:pPr>` and run properties rather than writing fresh ones.
+     * `rPr` is the run-properties string every generated run carries.
      */
-    private buildCaptionRuns;
-    private buildCaptionParagraph;
-    /** Count how many captions for a given label already exist in the document. */
-    private countExistingCaptions;
+    private captionContent;
     /**
-     * Insert a caption paragraph next to the paragraph at `nearIndex`.
+     * Recompute every SEQ (and caption STYLEREF) field RESULT in the body, in
+     * DOCUMENT order, honouring each field's own `\*` format and `\s` chapter
+     * reset — exactly what Word does when you press F9.
      *
-     * `position: "below"` (default) inserts the caption after nearIndex.
-     * `position: "above"` inserts the caption before nearIndex.
+     * This matters because nothing outside Word updates fields: the app's preview
+     * and the OnlyOffice PDF both render the cached result. Without this pass a
+     * caption inserted before an existing one keeps the higher number on screen.
+     */
+    renumber(): Promise<void>;
+    /** In-memory half of {@link renumber}. Returns true when something changed. */
+    private renumberBlocks;
+    /** Rewrite every SEQ / caption-STYLEREF field result inside one block's XML. */
+    private renumberFieldsIn;
+    /**
+     * Read EVERY caption in one paragraph — Word numbers each SEQ field it finds,
+     * and real theses do put two figures on one line ("Figure 19: … Figure 20: …").
+     * Returns [] when the paragraph carries no caption field.
+     */
+    private readCaptions;
+    /** The first caption in a paragraph, or null. */
+    private readCaption;
+    /**
+     * Insert a caption paragraph next to the BLOCK at `nearIndex` — the same index
+     * space as `document.getBlocks()`, so a table's index really does place the
+     * caption against that table.
      *
-     * @returns The index at which the caption was inserted.
+     * `position: "below"` (default) inserts after `nearIndex`, `"above"` before it.
+     *
+     * @returns The BLOCK index at which the caption was inserted.
      */
     insertCaption(nearIndex: number, opts?: CaptionOptions): Promise<number>;
     /**
-     * Return all caption paragraphs (those using the "Caption" style).
-     * The SEQ field placeholder text is used as the `number`.
+     * Turn the thesis's HAND-TYPED captions into real Word captions.
+     *
+     * A student who never opened References → Insert Caption still typed
+     * "Figure 1 : Organigramme" under each figure. Those are dead text: no List
+     * of Figures collects them, no cross-reference points at them, and inserting
+     * a figure in the middle means renumbering every one by hand. This rewrites
+     * each such paragraph IN PLACE as the real thing — Caption style, a bookmark,
+     * and a live SEQ field — keeping the student's own wording, separator,
+     * alignment and run formatting.
+     *
+     * In place matters twice over: no block is added or removed, so **every block
+     * index the caller holds stays valid**, and a caption that lives inside a
+     * one-cell table (the usual way a thesis centres a figure) converts too.
+     *
+     * Numbering is the caller's choice, exactly as in Word's dialog: plain
+     * sequential by default ("Figure 1", "Figure 2", …), or per-chapter when
+     * `numbering.includeChapterNumber` is set ("Figure I-1", "Figure II-1", …
+     * restarting at every chapter heading).
+     *
+     * Labels are UNIFIED per kind — a thesis that mixes "Fig. 2" and "Figure 3"
+     * would otherwise end up with two competing SEQ sequences and two half-empty
+     * lists of figures. The winner is `opts.label` when given, else the label the
+     * document's existing REAL captions already use, else the spelling the typed
+     * ones use most often.
+     */
+    convertTextCaptions(opts?: ConvertTextCaptionsOptions): Promise<ConvertTextCaptionsResult>;
+    /**
+     * The label each converted kind will carry. Existing REAL captions win — an
+     * Arabic thesis whose figures already say "الشكل رقم" must not gain a second
+     * "شكل" sequence — then the typed spelling used most often, then `override`.
+     */
+    private resolveConvertLabels;
+    /**
+     * Every caption in the document, in document order. `filterLabel` accepts
+     * either the readable label ("الشكل رقم") or its SEQ identifier.
      */
     getCaptions(filterLabel?: string): Promise<CaptionEntry[]>;
+    /** The distinct caption labels used in the document, most-used first. */
+    listLabels(): Promise<Array<{
+        label: string;
+        displayLabel: string;
+        count: number;
+    }>>;
     /**
-     * Remove all caption paragraphs for a given label (e.g. remove all "Figure" captions).
+     * Replace a caption's TEXT while keeping its label, number field and bookmark
+     * intact — the edit Word makes when you retype a caption's wording.
+     * Returns false when the block isn't a caption.
+     */
+    setCaptionText(blockIndex: number, text: string): Promise<boolean>;
+    /** String half of {@link setCaptionText}; null when `xml` isn't a caption. */
+    private replaceCaptionText;
+    /**
+     * Remove every caption for a label (e.g. all "Figure" captions), then
+     * renumber what remains.
      */
     removeCaptions(label: string): Promise<void>;
-    /**
-     * Remove a single caption by its paragraph index.
-     */
-    removeCaptionAt(paragraphIndex: number): Promise<void>;
-    /**
-     * Convenience: insert a "Figure N — text" caption below a paragraph.
-     */
-    insertFigureCaption(nearIndex: number, text: string, numbering?: CaptionNumberingOptions): Promise<number>;
-    /**
-     * Convenience: insert a "Table N — text" caption above or below a table.
-     */
-    insertTableCaption(nearIndex: number, text: string, position?: CaptionPosition, numbering?: CaptionNumberingOptions): Promise<number>;
-    /**
-     * Convenience: insert an "Equation N" caption.
-     */
-    insertEquationCaption(nearIndex: number, text?: string, numbering?: CaptionNumberingOptions): Promise<number>;
-    /**
-     * Insert a caption with a custom label (New Label in Word's dialog).
-     */
+    /** Remove a single caption by BLOCK index, then renumber. */
+    removeCaptionAt(blockIndex: number): Promise<void>;
+    /** Convenience: insert a "Figure N — text" caption below a block. */
+    insertFigureCaption(nearIndex: number, text: string, numbering?: CaptionNumberingOptions, opts?: Omit<CaptionOptions, "text" | "numbering">): Promise<number>;
+    /** Convenience: insert a "Table N — text" caption above (Word default) a table. */
+    insertTableCaption(nearIndex: number, text: string, position?: CaptionPosition, numbering?: CaptionNumberingOptions, opts?: Omit<CaptionOptions, "text" | "numbering" | "position">): Promise<number>;
+    /** Convenience: insert an "Equation N" caption. */
+    insertEquationCaption(nearIndex: number, text?: string, numbering?: CaptionNumberingOptions, opts?: Omit<CaptionOptions, "text" | "numbering">): Promise<number>;
+    /** Insert a caption with a custom label (Word's "New Label"). */
     insertCustomCaption(nearIndex: number, label: string, text: string, opts?: Omit<CaptionOptions, "label" | "text">): Promise<number>;
-    /**
-     * Insert a "List of [label]" — collects all captions for the given label
-     * using the field code:  TOC \h \z \c "Figure"
-     *
-     * Equivalent to Word: References → Insert Table of Figures.
-     *
-     * @param label     Caption label to collect: "Figure", "Table", "Equation", etc.
-     * @param title     Heading shown above the list (pass "" to omit).
-     * @param index     Body paragraph index to insert at (default: 0 = top of document).
-     */
-    /**
-     * Build one pre-populated entry paragraph for a caption list.
-     * Matches Word's "Table of Figures" style:
-     *   <entry text> <dot leader tab> <page number>
-     */
+    /** One pre-populated entry: `<entry text><dot leader tab><page number>`. */
     private buildListEntryParagraph;
-    insertCaptionList(label: string, title?: string, index?: number): Promise<void>;
-    /** Shorthand: insert List of Figures at given index. */
-    insertListOfFigures(title?: string, index?: number): Promise<void>;
-    /** Shorthand: insert List of Tables at given index. */
-    insertListOfTables(title?: string, index?: number): Promise<void>;
+    /** Give a caption paragraph a bookmark if it has none, so PAGEREF can find it. */
+    private ensureCaptionBookmark;
     /**
-     * Remove the caption list (TOC \c field) for a given label.
+     * Insert a "List of <label>" — Word's References → Insert Table of Figures,
+     * i.e. the field `TOC \h \z \c "Figure"`, pre-populated with one entry per
+     * existing caption so the list reads correctly before Word ever updates it.
+     *
+     * @param label Caption label to collect ("Figure", "Table", "الشكل رقم", …).
+     * @param title Heading shown above the list (pass "" to omit).
+     * @param index BLOCK index to insert at (default: 0 = top of document).
+     * @param rtl   Write the list right-to-left (Arabic thesis).
+     */
+    insertCaptionList(label: string, title?: string, index?: number, rtl?: boolean): Promise<void>;
+    /** Shorthand: insert List of Figures at the given BLOCK index. */
+    insertListOfFigures(title?: string, index?: number, rtl?: boolean): Promise<void>;
+    /** Shorthand: insert List of Tables at the given BLOCK index. */
+    insertListOfTables(title?: string, index?: number, rtl?: boolean): Promise<void>;
+    /**
+     * Remove the caption list (`TOC \c` field) for a given label — its heading,
+     * the field, and every pre-populated entry paragraph.
+     *
+     * A TOC field SPANS paragraphs (begin … separate … entries … end), so this
+     * walks from the paragraph holding the instruction to the one holding the
+     * matching `fldChar end` rather than deleting a single paragraph.
      */
     removeCaptionList(label: string): Promise<void>;
 }
@@ -207,6 +311,17 @@ export declare interface CaptionNumberingOptions {
     chapterStyle?: string;
     /** Separator between chapter number and caption number (default: "-") */
     chapterSeparator?: ChapterSeparator;
+    /**
+     * Format of the CHAPTER half of the number — "Figure I-1" instead of
+     * "Figure 1-1" (default: follow the heading's own numbering).
+     *
+     * Word's `STYLEREF n \s` echoes whatever the chapter heading's list format
+     * renders, so a thesis whose Heading 1 is numbered "Chapitre I" already reads
+     * "I-1". A thesis whose headings are plain text or arabic-numbered does not,
+     * and Word's Caption dialog offers no way to fix that — the `\*` switch does:
+     * ` STYLEREF 1 \s \* ROMAN ` converts the result on the fly.
+     */
+    chapterFormat?: CaptionNumberFormat;
 }
 
 export declare interface CaptionOptions {
@@ -214,12 +329,21 @@ export declare interface CaptionOptions {
     label?: string;
     /** Caption body text after the label + number */
     text?: string;
-    /** Where to insert relative to the paragraph at insertIndex (default: "below") */
+    /** Where to insert relative to the block at insertIndex (default: "below") */
     position?: CaptionPosition;
     /** Omit the label prefix, e.g. just "1" instead of "Figure 1" */
     excludeLabel?: boolean;
     /** Numbering configuration */
     numbering?: CaptionNumberingOptions;
+    /** Write the caption right-to-left (Arabic thesis): `w:bidi` + `w:rtl`. */
+    rtl?: boolean;
+    /**
+     * What sits between the number and the text (default: a single space, the way
+     * Word's own dialog writes it). Conversion passes the separator the thesis
+     * already types — " : " in French, " - ", ". " — so a converted caption still
+     * READS exactly as the student wrote it.
+     */
+    textSeparator?: string;
 }
 
 export declare type CaptionPosition = "below" | "above";
@@ -246,6 +370,9 @@ export declare type ChapterSeparator = "-" | "." | ":" | "–" | "—";
 declare type ChapterSeparator_2 = "hyphen" | "period" | "colon" | "emDash" | "enDash";
 
 declare type ChapterSeparator_3 = "hyphen" | "period" | "colon" | "emDash" | "enDash";
+
+/** Check a .docx held as bytes. Read-only — the buffer is never modified. */
+export declare function checkDocxBuffer(buffer: Buffer): Promise<DoctorReport>;
 
 /** One logo image embedded inside an applied header/footer part. `token` is a
  *  unique placeholder present in the region XML (e.g. inside `<a:blip r:embed>`),
@@ -303,6 +430,27 @@ export declare interface CitationSource {
     city?: string;
     publisher?: string;
 }
+
+/**
+ * Clear the "data descriptor present" flag on entries that do not have one.
+ *
+ * LibreOffice (and anything else that streams a zip) sets general-purpose bit 3
+ * and appends a descriptor after each entry. adm-zip re-writes such an archive
+ * with real sizes and CRCs in the headers but WITHOUT the descriptor — while
+ * faithfully copying the flag that promises one. The result is a perfectly valid
+ * zip by every other reader (`unzip -t` passes, Word opens it) that adm-zip's own
+ * reader then refuses with "No descriptor present".
+ *
+ * That matters here because the server re-opens its own output on the next edit:
+ * one save of a LibreOffice-authored upload was enough to make every later AI
+ * edit of that thesis fail to load. Clearing the lying flag is a two-byte fix per
+ * entry, and it makes the bytes describe what is actually in the file.
+ *
+ * Bails out untouched on anything unexpected (Zip64, truncated directory, a
+ * local header that doesn't line up) — a half-rewritten zip is far worse than an
+ * unhelpful one.
+ */
+export declare function clearFalseDataDescriptors(buffer: Buffer): Buffer;
 
 /** Convert centimetres to twips */
 export declare const cmToTwips: (cm: number) => number;
@@ -382,6 +530,47 @@ export declare class ContentTypesManager {
      * Helper to create a new unique part name with GUID
      */
     generateUniquePartName(prefix: string, extension?: string): string;
+}
+
+export declare interface ConvertedCaption {
+    blockIndex: number;
+    kind: CaptionKind;
+    /** The label written, after unification (e.g. "Figure"). */
+    label: string;
+    /** The paragraph's text before conversion. */
+    before: string;
+    /** Its text after — the same wording, now with a live number. */
+    after: string;
+}
+
+export declare interface ConvertTextCaptionsOptions {
+    /** First block to scan (default 0). */
+    fromIndex?: number;
+    /** Last block to scan, inclusive (default: the last block). */
+    toIndex?: number;
+    /** Restrict to one kind; "all" (the default) converts figures, tables and equations. */
+    kind?: CaptionKind | "all";
+    /** Force the label to write, e.g. "Tableau". Only honoured for a single `kind`. */
+    label?: string;
+    /**
+     * Numbering, as in Word's dialog. Omit for plain sequential numbers
+     * ("Figure 1", "Figure 2", …); set `includeChapterNumber` for per-chapter
+     * numbering that restarts at each chapter ("Figure I-1", "Figure II-1", …).
+     */
+    numbering?: CaptionNumberingOptions;
+    /** Force RTL/LTR; omit to follow each paragraph's own direction. */
+    rtl?: boolean;
+    /** Report what WOULD convert without writing anything. */
+    dryRun?: boolean;
+}
+
+export declare interface ConvertTextCaptionsResult {
+    converted: ConvertedCaption[];
+    skipped: SkippedTextCaption[];
+    /** The label chosen per kind. */
+    labels: Partial<Record<CaptionKind, string>>;
+    /** True when nothing was written. */
+    dryRun: boolean;
 }
 
 export declare interface CoreProperties {
@@ -497,6 +686,24 @@ export declare class Doc {
      * structural heading the outline/TOC can see.
      */
     setHeadingLevel(index: number, level: number): Promise<this>;
+    /**
+     * Apply run-level formatting to one or more named PARTS of the document —
+     * `body`, `headings` (or `heading1`…`heading6`), `title`, `captions`, `lists`,
+     * `tables`, `footnotes`.
+     *
+     * Style-level with a strip: each target's Word style is ensured and patched,
+     * then the named property is removed from that target's runs so the style
+     * shows through (imported theses carry formatting on the RUNS, which would
+     * otherwise win). Paragraphs that would not resolve to the target's patched
+     * style get a direct write instead. Properties that were not named are never
+     * touched.
+     *
+     * Returns one report per target, so a caller can tell a no-op from a change.
+     *
+     * @throws on an unknown target name, and on a malformed `styles.xml`. A
+     * malformed individual RUN is skipped and counted, never aborting the pass.
+     */
+    setTextStyle(targets: readonly TextStyleTargetInput[], props: RunProps): Promise<TargetReport[]>;
     /** Delete the block at `index`. */
     deleteBlock(index: number): Promise<this>;
     /** Append a table from a row-major grid (or insert at `at`). */
@@ -687,6 +894,18 @@ export declare class Doc {
      */
     setSectionFooter(blockIndex: number, opts?: FooterOptions): Promise<SectionEditResult>;
     /**
+     * Vertically align the content of the section CONTAINING the block at
+     * `blockIndex`. "center" places a divider page's title in the middle of the
+     * page instead of at the top. Call `startOnNewPage` on that block first so it
+     * is its own section, or this aligns whatever section it falls in.
+     */
+    setSectionVerticalAlign(blockIndex: number, vAlign: "top" | "center" | "both" | "bottom"): Promise<SectionEditResult>;
+    /**
+     * Draw a page border around the section CONTAINING the block at `blockIndex`
+     * (the `frame` divider family). Overwrites any border that section had.
+     */
+    setSectionPageBorders(blockIndex: number, opts: SectPrPageBorderOptions): Promise<SectionEditResult>;
+    /**
      * Apply a COMPILED header and/or footer (raw OOXML region bodies) to the section
      * that contains the block at `blockIndex`, embedding any logo images into the
      * header/footer part's OWN relationships so they resolve in Word. This is how a
@@ -764,6 +983,16 @@ export declare interface DocMap {
     hasFooter: boolean;
     rtl: boolean;
     outline: OutlineNode[];
+}
+
+export declare interface DoctorReport {
+    /** No fatal findings remain (after repairs, when repairing). */
+    ok: boolean;
+    /** Zip entries examined. */
+    checkedParts: number;
+    findings: Finding[];
+    /** Parts actually rewritten. Empty unless `fix` was requested. */
+    repairedParts: string[];
 }
 
 /**
@@ -909,6 +1138,15 @@ export declare interface DocumentMargins {
     opposite: number;
 }
 
+/** The three-and-a-bit methods we need off the engine's zip (or adm-zip). */
+export declare interface DocxZip {
+    getEntries(): {
+        entryName: string;
+    }[];
+    readAsText(entry: string): string;
+    addFile(entry: string, content: Buffer): void;
+}
+
 /**
  * Represents a drawing element.
  * A drawing object (e.g., a chart or picture) located in a run.
@@ -973,6 +1211,25 @@ export declare class EndnoteManager {
     private extractText;
 }
 
+/** How to create a paragraph style that does not exist yet. */
+export declare interface EnsureStyleSpec {
+    /** `w:name` — Word's display name. Maps the style onto a built-in when it matches. */
+    name: string;
+    /** `w:basedOn` target, omitted when absent. */
+    basedOn?: string;
+    /** Emit `w:default="1"` — used for `Normal`. */
+    isDefault?: boolean;
+}
+
+/**
+ * Expand `"headings"` into the six `headingN` targets, de-duplicate, and
+ * validate every entry. Throws — rather than silently dropping an unrecognised
+ * target — because a caller asking to restyle "bodytext" almost certainly
+ * mistyped "body", and a silent no-op there would ship broken formatting to a
+ * live thesis with no signal anything went wrong.
+ */
+export declare function expandTargets(targets: readonly string[]): TextStyleTarget[];
+
 /**
  * Represents a field, such as a page number or table of contents.
  * @example
@@ -994,6 +1251,28 @@ declare interface Field {
     };
     "w:instrText"?: string;
 }
+
+export declare interface Finding {
+    /** Stable id — the dashboard and the AI tools key their copy off this. */
+    rule: string;
+    severity: Severity;
+    /** Zip entry the finding is in, or "package" for whole-file findings. */
+    part: string;
+    /** How many occurrences in that part. */
+    count: number;
+    /** One line, plain English, safe to show a human or hand to a model. */
+    message: string;
+    /** True when this doctor knows a mechanical repair for it. */
+    fixable: boolean;
+    /** True when `fix` was requested AND the repair was applied. */
+    fixed: boolean;
+    /** Optional specifics (offending ids, sample values) — already truncated. */
+    detail?: string;
+}
+
+/** A cheap well-formedness check: tag balance with quote/comment awareness.
+ *  Not a validator — its job is to catch a part we (or a previous writer) tore. */
+export declare function firstXmlError(xml: string): string | null;
 
 export declare class FooterManager {
     zip: default_2;
@@ -1135,6 +1414,9 @@ export declare class FootnoteManager {
     createFootnoteRun(footnoteId: number): Run_2;
     private extractText;
 }
+
+/** Render a sequence number the way Word's `\*` format switch would. */
+export declare function formatSeqNumber(n: number, fmt: string): string;
 
 /**
  * Applies a {@link DocumentFormatting} profile uniformly across the document body
@@ -1415,6 +1697,20 @@ export declare interface InsertShapeOptions {
     textAlign?: "l" | "ctr" | "r";
 }
 
+/**
+ * Check a .docx package and, with `fix`, repair what can be repaired. The zip is
+ * mutated in place; the caller decides whether to write the bytes back.
+ */
+export declare function inspectDocx(zip: DocxZip, opts?: InspectOptions): DoctorReport;
+
+export declare interface InspectOptions {
+    /** Apply every repair this doctor considers safe. */
+    fix?: boolean;
+    /** Also apply repairs that DELETE something (an unreferenced dangling
+     *  relationship). Never on the automatic save path. */
+    aggressive?: boolean;
+}
+
 export declare interface LineNumberingOptions {
     countBy?: number;
     start?: number;
@@ -1449,11 +1745,31 @@ export declare function makeDrawingParagraphXml(relId: string, widthEmu: number,
  */
 export declare function makeParagraphNode(text: string, styleId?: string, rtl?: boolean): BodyBlock;
 
+/** {@link makeParagraphXmlLike} as a `BodyBlock`. */
+export declare function makeParagraphNodeLike(templateXml: string, text: string): BodyBlock;
+
 /**
  * Build a `<w:p>` paragraph XML string from plain text + optional style/RTL:
  * `<w:p>(<w:pPr>(<w:pStyle w:val="ID"/>)(<w:bidi/>)</w:pPr>)?<w:r><w:t xml:space="preserve">ESCAPED</w:t></w:r></w:p>`
  */
 export declare function makeParagraphXml(text: string, styleId?: string, rtl?: boolean): string;
+
+/**
+ * Build a `<w:p>` carrying `text` but wearing `templateXml`'s clothes: its whole
+ * `<w:pPr>` (style, alignment, indent, spacing, bidi, numbering) plus the run
+ * properties of its first text-bearing run.
+ *
+ * Use this — NOT `makeParagraphXml`/`makeStyledParagraphXml` — whenever a new
+ * paragraph is added beside existing content (split, range rewrite, AI insert).
+ * Rebuilding from a styleId alone only carries what the style sheet defines, and
+ * in an imported thesis that is usually nothing: the formatting lives on the
+ * runs. The result is a new paragraph that renders identically to the one it was
+ * derived from, instead of falling back to renderer defaults.
+ *
+ * The template's `<w:sectPr>` is dropped — cloning it would duplicate a section
+ * break and repaginate the document.
+ */
+export declare function makeParagraphXmlLike(templateXml: string, text: string): string;
 
 /** Build a fully-formatted paragraph `BodyBlock` (string-based, byte-safe). */
 export declare function makeStyledParagraphNode(text: string, opts?: StyledParagraphOptions): BodyBlock;
@@ -1627,12 +1943,18 @@ export declare class MediaManager {
      */
     private readByTarget;
     /**
-     * Extract the inline image embedded in a paragraph/run XML string (a block that
-     * carries `<w:drawing>` with `<a:blip r:embed="…">`). Resolves the relationship
-     * to the media bytes and reads the inline display size from `<wp:extent>`.
-     * Returns null when the block has no inline image or it can't be resolved.
+     * Extract the inline image embedded in a paragraph/run XML string. Handles both
+     * forms Word writes:
+     *   • DrawingML — `<w:drawing>` with `<a:blip r:embed="…">`, sized by `<wp:extent>`
+     *   • VML       — `<w:pict>`/`<w:object>` with `<v:imagedata r:id="…">`, sized by
+     *     the `<v:shape style="width:…pt;height:…pt">` CSS
+     * The VML form is what an embedded OLE object (a legacy Equation.3 / MathType
+     * equation, an Origin graph) uses for its on-page preview: the OLE binary itself
+     * is unreadable outside Word, but Word always stores a rendered bitmap beside it,
+     * and that bitmap is the only way to show the object anywhere else.
      *
-     * Replaces hand-rolled `r:embed` + rels + `wp:extent` regex on the caller side.
+     * Resolves the relationship to the media bytes. Returns null when the block has
+     * no inline image or it can't be resolved.
      */
     extractInlineImage(blockXml: string): Promise<InlineImage | null>;
     /**
@@ -2307,11 +2629,43 @@ declare interface ParagraphProperties {
     "w:rPr"?: RunProperties;
 }
 
+/**
+ * The `<w:pPr>…</w:pPr>` substring of a paragraph — style, alignment, indent,
+ * spacing, bidi, numbering — or "" when it has none.
+ */
+export declare function paragraphPropsXml(paragraphXml: string): string;
+
+/**
+ * The `<w:rPr>` that should style text (re)written into this paragraph: the
+ * properties of its first TEXT-BEARING run, falling back to the paragraph-mark
+ * properties inside `<w:pPr>` — the same source Word uses for newly typed text.
+ *
+ * This is what keeps an edited paragraph looking like its neighbours. Imported
+ * theses carry their formatting almost entirely at run level — `<w:rFonts
+ * w:cs="Times New Roman" w:hint="cs"/>` and `<w:rtl/>` for Arabic, plus
+ * `w:sz`/`w:szCs`/`w:b` — and `word/styles.xml` frequently has an empty
+ * `docDefaults`, so a run emitted WITHOUT these falls back to whatever the
+ * renderer defaults to: wrong face, wrong size, and (because `w:lineRule="auto"`
+ * scales with font size) visibly tighter lines than the paragraphs around it.
+ */
+export declare function paragraphRunPropsXml(paragraphXml: string): string;
+
 /** Extract the `w:val` of the paragraph's `<w:pStyle>`, or null. */
 export declare function paragraphStyleId(xml: string): string | null;
 
 /** Concatenate the decoded text of every `<w:t ...>...</w:t>` in a block. */
 export declare function paragraphText(xml: string): string;
+
+/**
+ * Read EVERY caption in one paragraph's XML — Word numbers each SEQ field it
+ * finds, and real theses do put two figures on one line ("Figure 19: … Figure
+ * 20: …"). Returns [] when the paragraph carries no caption field.
+ *
+ * Exported because reading a caption needs no document: the app's figure-caption
+ * endpoint uses it to strip the label and number off a caption before handing the
+ * wording to the model.
+ */
+export declare function parseCaptionParagraph(xml: string, blockIndex?: number): CaptionEntry[];
 
 /** Split a full document into its top-level body blocks. */
 export declare function parseOrderedDoc(documentXml: string): {
@@ -2319,6 +2673,18 @@ export declare function parseOrderedDoc(documentXml: string): {
     blocks: BodyBlock[];
     bodyChildren: BodyBlock[];
 };
+
+/**
+ * Parse a paragraph's plain text as a hand-typed caption, or null.
+ *
+ * Deliberately conservative — a false positive rewrites a body paragraph into a
+ * caption, which is far worse than missing one the student can point at. A hit
+ * needs a caption label at the very START of the paragraph plus either a number
+ * or punctuation after it, and prose that runs on ("Figure 1 shows that …")
+ * is rejected: with no punctuation the remainder must be short and must not
+ * open with a lowercase word.
+ */
+export declare function parseTextCaption(text: string): TextCaptionMatch | null;
 
 /** Convert pixels (96 DPI) to EMU. */
 export declare const pixelsToEmu: (px: number) => number;
@@ -2410,6 +2776,25 @@ export declare interface RenderedTable {
  * language); anything the hook does not claim is rendered by the engine.
  */
 export declare function renderMarkdownBlocks(blocks: MarkdownBlock[], ctx: MarkdownRenderCtx, renderBlock?: BlockRenderer): RenderedMarkdown;
+
+/**
+ * Repair a .docx held as bytes.
+ *
+ * The result is re-opened and re-checked before it is handed back: if the repair
+ * somehow left a part unreadable, or turned a clean fatal into a new one, the
+ * whole thing is discarded and the original bytes are returned. A doctor that
+ * can corrupt a thesis is worse than no doctor.
+ */
+export declare function repairDocxBuffer(buffer: Buffer, opts?: {
+    aggressive?: boolean;
+}): Promise<RepairResult>;
+
+export declare interface RepairResult extends DoctorReport {
+    /** The repaired bytes, or the ORIGINAL buffer when nothing was rewritten. */
+    buffer: Buffer;
+    /** True when `buffer` differs from what was passed in. */
+    changed: boolean;
+}
 
 export declare interface RevisionEntry {
     id: number;
@@ -2656,6 +3041,25 @@ declare interface RunProperties {
     };
 }
 
+/**
+ * The run-level properties `set_text_style` can apply. Every field is optional;
+ * only the ones actually supplied are ever written, stripped, or considered.
+ * `undefined` means "the student did not name this" — distinct from `false`,
+ * which means "remove it".
+ */
+export declare interface RunProps {
+    /** Font family. Written to `w:ascii`, `w:hAnsi` AND `w:cs`. */
+    font?: string;
+    /** Size in POINTS. Written as half-points to BOTH `w:sz` and `w:szCs`. */
+    sizePt?: number;
+    /** true writes `<w:b/><w:bCs/>`; false removes both. */
+    bold?: boolean;
+    /** true writes `<w:i/><w:iCs/>`; false removes both. */
+    italic?: boolean;
+    /** Hex colour, with or without a leading '#'. */
+    color?: string;
+}
+
 export declare type SectionBreakType = "nextPage" | "continuous" | "evenPage" | "oddPage" | "nextColumn";
 
 /** Result of a section-scoped header/footer change. */
@@ -2744,6 +3148,30 @@ export declare class SectionManager {
     setSectionHeader(sectionIndex: number, relId: string, type?: "default" | "first" | "even"): Promise<void>;
     setSectionFooter(sectionIndex: number, relId: string, type?: "default" | "first" | "even"): Promise<void>;
     /**
+     * Set ONE section's page-number format and/or restart value (`<w:pgNumType>`)
+     * — e.g. roman for the front matter, arabic restarting at 1 for the body.
+     *
+     * `FooterManager.formatPageNumbers` only ever reaches the BODY sectPr, so it
+     * cannot express per-section numbering; this can. Omit `start` to continue
+     * the previous section's sequence.
+     */
+    setSectionPageNumbering(sectionIndex: number, opts: {
+        format?: string;
+        start?: number;
+    }): Promise<void>;
+    /**
+     * Vertically align a section's page content (`<w:vAlign>`). "center" is what
+     * puts a divider page's title in the true middle of the page.
+     */
+    setSectionVerticalAlign(sectionIndex: number, vAlign: "top" | "center" | "both" | "bottom"): Promise<void>;
+    /**
+     * Draw a page border on all four edges of ONE section (`<w:pgBorders>`) — the
+     * `frame` divider family. Colour must be 6-hex (leading '#' tolerated):
+     * ST_HexColor admits nothing else, and an invalid value here is the class of
+     * defect that trips Word's "unreadable content" repair dialog.
+     */
+    setSectionPageBorders(sectionIndex: number, opts: SectPrPageBorderOptions): Promise<void>;
+    /**
      * Apply `transform` to the `<w:sectPr>` of section `sectionIndex` — byte-safe
      * string surgery. Intermediate sections live inside a paragraph's `<w:pPr>`;
      * the final section is the body's `<w:sectPr>` (created if absent). Sections
@@ -2769,19 +3197,84 @@ export declare interface SectionPageSize {
     orientation?: "portrait" | "landscape";
 }
 
+export declare interface SectPrPageBorderOptions {
+    style: "single" | "double" | "thick" | "dashed" | "dotted";
+    /** 6-hex, with or without a leading '#'. */
+    color: string;
+    /** Border width in POINTS; Word stores eighths of a point (w:sz). */
+    widthPt: number;
+    /**
+     * Distance from the page edge in points (w:space). Default 24. Word's own
+     * dialog only accepts 24–31 when measuring from the page edge; other values
+     * open fine but Word clamps them.
+     */
+    offsetPt?: number;
+}
+
 /**
- * Replace the text of a paragraph's XML string IN PLACE (operates only on the
- * given paragraph substring — cannot affect any sibling block):
- *
- *  - If the paragraph contains a `<w:drawing>` / `<w:pict>` / `<w:object>`
- *    (an inline image or embedded object), DO NOT strip runs. Instead replace
- *    only the text inside the FIRST `<w:t>` (or append a text run after
- *    `<w:pPr>` if there is no `<w:t>`), leaving the drawing runs intact.
- *  - Otherwise (a plain text paragraph): preserve `<w:pPr>...</w:pPr>` if
- *    present and replace ALL `<w:r>...</w:r>` runs with a single
- *    `<w:r><w:t xml:space="preserve">ESCAPED</w:t></w:r>`.
+ * The SEQ identifier for a caption label. A SEQ name is bookmark-like, so it
+ * cannot contain whitespace — "الشكل رقم" numbers under "الشكل_رقم" while the
+ * document still READS "الشكل رقم". The Table-of-Figures `\c` switch uses the
+ * same identifier, so the two always agree.
  */
+export declare function seqIdentifier(label: string): string;
+
 export declare function setParagraphText(paragraphXml: string, text: string): string;
+
+/**
+ * docx-doctor — inspect a .docx package for the corruption classes that actually
+ * bite this product, and mechanically repair the ones that can be repaired.
+ *
+ * ## Why this exists
+ *
+ * An AI edit writes real OOXML into a real student's thesis. When it writes the
+ * wrong SHAPE, Word does not warn and does not repair — it refuses the file
+ * outright ("Word experienced an error trying to open the file"), and the damage
+ * is already on disk. Every defect below is one we have shipped at least once:
+ *
+ *  • **Schema sequence.** `w:tblPr`, `w:tcPr`, `w:pPr`, `w:sectPr` and `w:style`
+ *    are `xsd:sequence` — child ORDER is a hard constraint, and `bidiVisual`
+ *    after `tblW` killed an Arabic thesis. Well-formed ≠ valid, so `xmllint` sees
+ *    nothing. (`w:rPr` and `w:trPr` are deliberately NOT checked: their schema
+ *    types are repeated CHOICES, so their child order is free.)
+ *  • **Story shape.** A story must not end with a table, and two adjacent tables
+ *    merge into one. Word writes an empty `<w:p/>` at both spots; hand-built
+ *    OOXML forgets to.
+ *  • **Body order.** Any manager that round-trips `word/document.xml` through
+ *    xml2js regroups `<w:body>` children BY TAG, hoisting every table above every
+ *    paragraph. Block indices here are positional (op queue, RAG chunks, edits),
+ *    so that silently rewires the whole document. Unfixable in place — the order
+ *    is genuinely gone — so we detect it loudly and point at history restore.
+ *  • **Dropped spaces.** The same xml2js path runs `trim:true`, which turns
+ *    Word's inter-word space runs (`<w:t xml:space="preserve"> </w:t>`) into
+ *    `<w:t/>`. Words glue together. We can't recover an emptied run, but we CAN
+ *    stop the next save from dropping the spaces still present.
+ *  • **Package integrity.** Dangling relationship targets, missing
+ *    `[Content_Types].xml` overrides, duplicate rIds — each on its own makes Word
+ *    refuse the document.
+ *  • **Lying zip flags.** adm-zip re-writes a streamed archive keeping the
+ *    "a data descriptor follows" flag it did not honour, and then cannot read its
+ *    own output back. See `clearFalseDataDescriptors`.
+ *
+ * ## Shape of the module
+ *
+ * Pure functions over a duck-typed zip, exactly like `hf-part-repair.ts` (which
+ * stays as the chrome-op fast path; both only ever move a part toward the same
+ * canonical shape, so running either or both is idempotent). String surgery on
+ * purpose: a parse/rebuild round-trip is the very thing that causes half the
+ * defects listed above.
+ *
+ * `inspectDocx(zip)` reports. `inspectDocx(zip, { fix: true })` also repairs, in
+ * place, and lists the parts it rewrote. `checkDocxBuffer` / `repairDocxBuffer`
+ * are the byte-level wrappers; the repairing one re-opens its own output and
+ * discards the whole repair unless every rewritten part still parses and no new
+ * fatal appeared. Verified against real theses: four Word-authored student
+ * documents come back completely clean and untouched, and a repair never changes
+ * a single `<w:t>` payload — it only ever moves markup.
+ */
+/** `fatal` — the document is broken (Word refuses it, or its content order is
+ *  destroyed). `warning` — wrong or degraded, but it still opens. */
+export declare type Severity = "fatal" | "warning";
 
 export declare interface ShapeEntry {
     id: number;
@@ -2835,6 +3328,15 @@ export declare interface ShapeSize {
 }
 
 export declare type ShapeType = "rect" | "roundRect" | "ellipse" | "triangle" | "diamond" | "line" | "rightArrow" | "leftArrow" | "star5" | "cloud" | "heart";
+
+export declare interface SkippedTextCaption {
+    blockIndex: number;
+    reason: SkipReason;
+    text: string;
+}
+
+/** Why a paragraph that reads like a caption was left alone. */
+export declare type SkipReason = "already-a-caption" | "is-a-heading" | "contains-image" | "contains-field";
 
 /** The result of splitting a full `word/document.xml`. */
 declare interface SplitDocument {
@@ -2902,7 +3404,19 @@ export declare class StylesManager {
      * rather than one paragraph's run. See {@link applyHeadingStyleToXml}.
      */
     setHeadingStyle(levels: number[] | undefined, formatting: HeadingRunFormatting): Promise<HeadingStyleResult>;
+    /**
+     * Ensure `styleId` exists (creating it from `ensure` when missing), then apply
+     * `props` to its `<w:rPr>`. A STYLE-level change: it reaches every paragraph
+     * using the style, present and future.
+     */
+    setStyleRunProps(styleId: string, props: RunProps, ensure?: EnsureStyleSpec): Promise<{
+        created: boolean;
+        updated: boolean;
+    }>;
 }
+
+/** One-line summary for a log line or a tool reply. */
+export declare function summarize(report: DoctorReport): string;
 
 /**
  * Wraps a parsed <w:tbl> and provides a full Table Design + Layout API.
@@ -3285,6 +3799,39 @@ declare interface TableRowProperties {
     [key: string]: any;
 }
 
+export declare const TARGET_SPECS: Record<TextStyleTarget, TargetSpec>;
+
+/** Per-target outcome of {@link TextStyleManager.apply}. */
+export declare interface TargetReport {
+    target: TextStyleTarget;
+    /** The style id patched in `word/styles.xml` for this target. */
+    styleId: string;
+    /** True if the style did not exist and was created (Phase 1 or Phase 2). */
+    styleCreated: boolean;
+    /** True if the style's `w:rPr` was rewritten (already existed or just created). */
+    styleTouched: boolean;
+    /** Runs whose named property was stripped so the patched style shows through. */
+    runsStripped: number;
+    /** Runs the per-run pass could not parse and left untouched (Decision A). */
+    runsSkipped: number;
+    /** Runs written directly because their paragraph would not resolve to the target's style. */
+    directWrites: number;
+    /** Paragraphs (or table-cell paragraphs) considered for this target. */
+    paragraphsAffected: number;
+}
+
+declare interface TargetSpec {
+    /** Style id(s) this target's runs are expected to resolve to. */
+    styleIds: string[];
+    /** Minimal style to create when absent, via string surgery. */
+    ensure?: EnsureStyleSpec;
+    /** Defer creation to a manager that owns a RICH definition. See Decision B. */
+    richEnsure?: "caption";
+    /** Which OOXML part the target's RUN edits happen in. The style patch itself
+     *  always lands in `word/styles.xml` regardless of this field. */
+    part: "body" | "footnotes";
+}
+
 export declare interface TextBoxOptions {
     text: string;
     position?: ShapePosition;
@@ -3293,6 +3840,18 @@ export declare interface TextBoxOptions {
     fillColor?: string;
     borderColor?: string;
     floating?: boolean;
+}
+
+export declare interface TextCaptionMatch {
+    kind: CaptionKind;
+    /** The label exactly as typed, e.g. "Fig." or "الشكل رقم". */
+    rawLabel: string;
+    /** The number exactly as typed, e.g. "I-1" or "٣"; "" when unnumbered. */
+    rawNumber: string;
+    /** What sat between the number and the text, e.g. " : ". */
+    separator: string;
+    /** The caption wording after the label, number and separator. */
+    text: string;
 }
 
 /**
@@ -3320,6 +3879,46 @@ declare interface TextNode {
     };
     _: string;
 }
+
+/**
+ * Apply a font/size/bold/italic/colour change to named PARTS of a thesis
+ * ("body", "heading3", "captions", "footnotes", …).
+ *
+ * Three strictly ordered phases per {@link apply}:
+ *  1. Object-model style ENSURES — today, only `captions`, via CaptionManager's
+ *     own rich `Caption` definition (Decision B).
+ *  2. String-surgery style PATCHES — `StylesManager.setStyleRunProps` for every
+ *     selected target's style id.
+ *  3. Body/footnote RUN edits — strip the named property from runs that would
+ *     resolve to the now-patched style; direct-write everything else.
+ *
+ * Phase 2 must never run after Phase 3 starts, and Phase 1 must never run
+ * after Phase 2: `StylesManager.addStyle` round-trips the ENTIRE styles.xml
+ * through an xml2js object model (parse → pretty-print), while
+ * `setStyleRunProps` is string surgery on the same file. An object-model
+ * write after string surgery can reformat or disturb it — so object-model
+ * ensures come first, string surgery always comes last within styles.xml.
+ */
+export declare class TextStyleManager {
+    private zip;
+    private styles;
+    private doc;
+    constructor(zip: default_2);
+    /**
+     * @param targets    Target names (accepts the `"headings"` shorthand).
+     * @param props      Which run properties to force, and to what value.
+     * @param blockInfos `Doc.blocks()` output, index-aligned 1:1 with
+     *                    `DocumentManager.getBlocks()`. Required because
+     *                    `BodyBlock` alone doesn't carry `headingLevel`/`styleId`.
+     */
+    apply(targets: readonly string[], props: RunProps, blockInfos: readonly BlockInfo[]): Promise<TargetReport[]>;
+    /** Phase 3 for the `footnotes` target — a separate part, `word/footnotes.xml`. */
+    private applyFootnotes;
+}
+
+export declare type TextStyleTarget = "body" | "heading1" | "heading2" | "heading3" | "heading4" | "heading5" | "heading6" | "title" | "captions" | "lists" | "tables" | "footnotes";
+
+export declare type TextStyleTargetInput = TextStyleTarget | "headings";
 
 /**
  * Pass-through classifier kept for compatibility. Filters out pure-whitespace

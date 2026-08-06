@@ -437,8 +437,12 @@ describe("مذكرة فتيحة حساني — read, modify sections, numbering,
       expect(xml).toContain("TOCHeading");
     });
 
-    test("insert List of Figures at position 6 (after List of Tables)", async () => {
-      await engine.captions.insertListOfFigures("قائمة الأشكال — Liste des Figures", 6);
+    test("insert List of Figures after the List of Tables ends", async () => {
+      // The Tables list starts at 4 and spans heading + field-begin + one entry
+      // per caption + field-end. Landing inside that range would NEST the
+      // Figures field inside the Tables field.
+      const tableCount = (await engine.captions.getCaptions("Table")).length;
+      await engine.captions.insertListOfFigures("قائمة الأشكال — Liste des Figures", 4 + 3 + tableCount);
 
       const xml = engine.zip.readAsText("word/document.xml")!;
       expect(xml).toContain('\\c "Figure"');

@@ -125,15 +125,20 @@ export default class DocumentManager {
    * Inserts a paragraph at the given index (appends if no index given).
    */
   public async insertParagraph(paragraph: Paragraph, index?: number): Promise<void> {
-    const paragraphs = await this.getParagraphs();
-
-    if (index === undefined || index >= paragraphs.length) {
-      paragraphs.push(paragraph);
-    } else {
-      paragraphs.splice(Math.max(0, index), 0, paragraph);
-    }
-
-    await this.saveChanges(paragraphs);
+    // Serialize ONLY the new paragraph and splice it into the ordered block
+    // list; every other block keeps its exact original bytes. Going through
+    // saveChanges here re-serialized the whole body, which regroups it by tag
+    // (tables torn away from their paragraphs) and trims the whitespace-only
+    // runs Word writes between words. `index` is an editable BLOCK index.
+    const pXml = XmlUtils.buildXml((paragraph as any).paragraph, {
+      rootName: "w:p",
+      headless: true,
+      pretty: false,
+    });
+    await this.insertBlockAt(
+      { kind: "paragraph", tag: "w:p", xml: pXml },
+      index ?? Number.MAX_SAFE_INTEGER,
+    );
   }
 
   /**
@@ -193,38 +198,20 @@ export default class DocumentManager {
   public async insertTable(table: Table, index?: number): Promise<void> {
     const xml = this.zip.readAsText(DOC_PATH);
     if (!xml) return;
-
-    const docObj = await XmlUtils.parseXml(xml);
-    const body = this._getBody(docObj);
-    if (!body) return;
-
-    // Collect body children as ordered array preserving paragraphs and tables
-    const children: { tag: string; obj: any }[] = [];
-    const paragraphs: any[] = Array.isArray(body["w:p"])
-      ? body["w:p"]
-      : body["w:p"]
-        ? [body["w:p"]]
-        : [];
-    const tables: any[] = Array.isArray(body["w:tbl"])
-      ? body["w:tbl"]
-      : body["w:tbl"]
-        ? [body["w:tbl"]]
-        : [];
-
-    paragraphs.forEach((p) => children.push({ tag: "w:p", obj: p }));
-    tables.forEach((t) => children.push({ tag: "w:tbl", obj: t }));
-
-    const newEntry = { tag: "w:tbl", obj: table.toObject() };
-    if (index === undefined || index >= children.length) {
-      children.push(newEntry);
-    } else {
-      children.splice(Math.max(0, index), 0, newEntry);
-    }
-
-    body["w:p"] = children.filter((c) => c.tag === "w:p").map((c) => c.obj);
-    body["w:tbl"] = children.filter((c) => c.tag === "w:tbl").map((c) => c.obj);
-
-    await this._writeDoc(docObj);
+    // Serialize ONLY the new table and splice it into the ordered block list, so
+    // every other block keeps its exact original bytes. Rebuilding the whole body
+    // here (the previous implementation) regrouped it by tag — every w:p before
+    // every w:tbl — tearing each table away from the paragraphs it belongs to.
+    // `index` is an editable BLOCK index, like the rest of the block API.
+    const tblXml = XmlUtils.buildXml(table.toObject(), {
+      rootName: "w:tbl",
+      headless: true,
+      pretty: false,
+    });
+    await this.insertBlockAt(
+      { kind: "table", tag: "w:tbl", xml: tblXml },
+      index ?? Number.MAX_SAFE_INTEGER,
+    );
   }
 
   // ─── Ordered body-block API (order-faithful, string-level OrderedBody) ────

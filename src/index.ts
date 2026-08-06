@@ -288,6 +288,10 @@ export {
   toBlocks,
   makeParagraphXml,
   makeParagraphNode,
+  makeParagraphXmlLike,
+  makeParagraphNodeLike,
+  paragraphPropsXml,
+  paragraphRunPropsXml,
   makeTableXml,
   makeTableNode,
   makeDrawingParagraphXml,
@@ -357,7 +361,15 @@ export type {
   CaptionPosition,
   ChapterSeparator,
   CaptionEntry,
+  CaptionKind,
+  ConvertTextCaptionsOptions,
+  ConvertTextCaptionsResult,
+  ConvertedCaption,
+  SkippedTextCaption,
+  SkipReason,
+  TextCaptionMatch,
 } from "./core/PartsManagers/CaptionManager";
+export { seqIdentifier, formatSeqNumber, parseCaptionParagraph, parseTextCaption } from "./core/PartsManagers/CaptionManager";
 export type { CommentEntry } from "./core/PartsManagers/CommentsManager";
 export type { RevisionEntry, RevisionType } from "./core/PartsManagers/TrackedChangesManager";
 export type {
@@ -391,3 +403,24 @@ export {
   buildParagraphStyleXml,
   type EnsureStyleSpec,
 } from "./core/PartsManagers/StylesManager";
+
+// ── Document doctor ──────────────────────────────────────────────────────────
+// Package-level validation and repair for the corruption classes that make Word
+// refuse a .docx. Lives here rather than in a consumer because it is pure OOXML
+// knowledge — no thesis, database or storage concepts. See src/doctor/.
+export {
+  inspectDocx,
+  checkDocxBuffer,
+  repairDocxBuffer,
+  clearFalseDataDescriptors,
+  firstXmlError,
+  summarize,
+} from "./doctor/index";
+export type {
+  DoctorReport,
+  Finding,
+  Severity,
+  DocxZip,
+  InspectOptions,
+  RepairResult,
+} from "./doctor/index";

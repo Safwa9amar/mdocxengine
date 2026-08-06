@@ -196,6 +196,31 @@ describe("OrderedBody — setParagraphText (in-place, run-preserving)", () => {
     expect(next).toContain('<w:t xml:space="preserve">caption</w:t>');
   });
 
+  // Regression: Word writes every blank line as a SELF-CLOSING `<w:p …/>`, and
+  // this used to find the `>` of `/>` as the end of the open tag — so the new run
+  // was appended AFTER the paragraph. At body level that is a bare `<w:r>`, which
+  // is not block-level content: Word then refuses to open the whole document
+  // ("Word experienced an error trying to open the file"), and the edited text is
+  // in no paragraph at all. Found in a live thesis via schema validation.
+  test("editing a SELF-CLOSING empty paragraph keeps the run INSIDE it", () => {
+    const p = '<w:p w:rsidR="000050DE" w:rsidRDefault="000050DE"/>';
+    const next = setParagraphText(p, "hello");
+
+    expect(next).toBe('<w:p w:rsidR="000050DE" w:rsidRDefault="000050DE"><w:r><w:t xml:space="preserve">hello</w:t></w:r></w:p>');
+    // The run must not escape the paragraph, and the paragraph must be closed.
+    expect(next.endsWith("</w:p>")).toBe(true);
+    expect(next).not.toMatch(/\/><w:r/);
+    expect(paragraphText(next)).toBe("hello");
+  });
+
+  test("a self-closing paragraph keeps its attributes and survives an empty edit", () => {
+    const next = setParagraphText('<w:p w:rsidR="ABC"/>', "");
+    expect(next).toContain('w:rsidR="ABC"');
+    expect(next).not.toMatch(/\/><w:r/);
+    expect(splitDocument(`<w:document><w:body>${next}</w:body></w:document>`).blocks
+      .filter((b) => b.tag !== "#text").map((b) => b.tag)).toEqual(["w:p"]);
+  });
+
   test("for a drawing paragraph WITH a w:t, replaces only that first w:t", () => {
     const p = `<w:p><w:pPr><w:pStyle w:val="Caption"/></w:pPr><w:r><w:t>orig</w:t></w:r><w:r><w:drawing><a:blip r:embed="rId9"/></w:drawing></w:r></w:p>`;
     const next = setParagraphText(p, "NEW");

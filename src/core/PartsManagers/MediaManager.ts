@@ -24,6 +24,8 @@ export interface ImageEntry {
 
 /** EMU per pixel at 96 DPI (1 px = 9525 EMU). */
 export const EMU_PER_PIXEL = 9525;
+/** EMU per point (914400 EMU per inch ÷ 72 pt per inch) — VML sizes in points. */
+export const EMU_PER_POINT = 12700;
 /** Convert EMU to whole pixels at 96 DPI. */
 export const emuToPixels = (emu: number): number => Math.round(emu / EMU_PER_PIXEL);
 /** Convert pixels (96 DPI) to EMU. */
@@ -120,15 +122,25 @@ export class MediaManager {
   }
 
   /**
-   * Extract the inline image embedded in a paragraph/run XML string (a block that
-   * carries `<w:drawing>` with `<a:blip r:embed="…">`). Resolves the relationship
-   * to the media bytes and reads the inline display size from `<wp:extent>`.
-   * Returns null when the block has no inline image or it can't be resolved.
+   * Extract the inline image embedded in a paragraph/run XML string. Handles both
+   * forms Word writes:
+   *   • DrawingML — `<w:drawing>` with `<a:blip r:embed="…">`, sized by `<wp:extent>`
+   *   • VML       — `<w:pict>`/`<w:object>` with `<v:imagedata r:id="…">`, sized by
+   *     the `<v:shape style="width:…pt;height:…pt">` CSS
+   * The VML form is what an embedded OLE object (a legacy Equation.3 / MathType
+   * equation, an Origin graph) uses for its on-page preview: the OLE binary itself
+   * is unreadable outside Word, but Word always stores a rendered bitmap beside it,
+   * and that bitmap is the only way to show the object anywhere else.
    *
-   * Replaces hand-rolled `r:embed` + rels + `wp:extent` regex on the caller side.
+   * Resolves the relationship to the media bytes. Returns null when the block has
+   * no inline image or it can't be resolved.
    */
   public async extractInlineImage(blockXml: string): Promise<InlineImage | null> {
-    const embed = /r:embed="([^"]+)"/.exec(blockXml);
+    // `r:id` is NOT specific enough on its own — the same `<w:object>` carries one
+    // on `<o:OLEObject>` (the OLE binary, not an image), and hyperlinks carry one
+    // too. Only `<v:imagedata>`'s points at media.
+    const embed =
+      /r:embed="([^"]+)"/.exec(blockXml) ?? /<v:imagedata\b[^>]*\br:id="([^"]+)"/.exec(blockXml);
     if (!embed) return null;
     const relId = embed[1];
     const target = await this.rels.getTarget(relId);
@@ -145,6 +157,15 @@ export class MediaManager {
     if (ext) {
       widthEmu = Number(ext[1]);
       heightEmu = Number(ext[2]);
+    } else {
+      // VML sizes in CSS on the shape: style="width:11.25pt;height:19.5pt".
+      const style = /<v:shape\b[^>]*\bstyle="([^"]*)"/.exec(blockXml);
+      if (style) {
+        const w = /(?:^|;)\s*width\s*:\s*([\d.]+)pt/.exec(style[1]);
+        const h = /(?:^|;)\s*height\s*:\s*([\d.]+)pt/.exec(style[1]);
+        if (w) widthEmu = Math.round(Number(w[1]) * EMU_PER_POINT);
+        if (h) heightEmu = Math.round(Number(h[1]) * EMU_PER_POINT);
+      }
     }
 
     return {

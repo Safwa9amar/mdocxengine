@@ -285,10 +285,13 @@ export class Table {
    */
   public setDefaultCellMargins(margins: CellMargins): this {
     const tblPr = this.ensureTableProps();
+    // CT_TblCellMar is an xsd:SEQUENCE — top, left, bottom, right. Key insertion
+    // order here is the element order the XML builder emits, so writing them in
+    // the "natural" top/bottom/left/right order produces a file Word rejects.
     tblPr["w:tblCellMar"] = {
       ...(margins.top    !== undefined ? { "w:top":    { $: { "w:w": String(margins.top),    "w:type": "dxa" } } } : {}),
-      ...(margins.bottom !== undefined ? { "w:bottom": { $: { "w:w": String(margins.bottom), "w:type": "dxa" } } } : {}),
       ...(margins.left   !== undefined ? { "w:left":   { $: { "w:w": String(margins.left),   "w:type": "dxa" } } } : {}),
+      ...(margins.bottom !== undefined ? { "w:bottom": { $: { "w:w": String(margins.bottom), "w:type": "dxa" } } } : {}),
       ...(margins.right  !== undefined ? { "w:right":  { $: { "w:w": String(margins.right),  "w:type": "dxa" } } } : {}),
     };
     return this;
@@ -298,10 +301,16 @@ export class Table {
    * Table-level borders.
    */
   public setTableBorders(borders: TableBorderOptions): this {
+    // CT_TblBorders is an xsd:SEQUENCE: top, left, bottom, right, insideH,
+    // insideV. These keys are emitted in INSERTION order, so assigning them
+    // top/bottom/left/right — the order a human thinks in — writes
+    // `<w:bottom>` before `<w:left>` and Word refuses to open the document
+    // ("Word experienced an error trying to open the file"). Well-formed but
+    // schema-invalid; nothing warns. Do not reorder these lines.
     const tblBorders: any = {};
-    if (borders.top)     tblBorders["w:top"]     = this.buildBorderEl(borders.top);
-    if (borders.bottom)  tblBorders["w:bottom"]  = this.buildBorderEl(borders.bottom);
+    if (borders.top)     tblBorders["w:top"]      = this.buildBorderEl(borders.top);
     if (borders.left)    tblBorders["w:left"]     = this.buildBorderEl(borders.left);
+    if (borders.bottom)  tblBorders["w:bottom"]   = this.buildBorderEl(borders.bottom);
     if (borders.right)   tblBorders["w:right"]    = this.buildBorderEl(borders.right);
     if (borders.insideH) tblBorders["w:insideH"]  = this.buildBorderEl(borders.insideH);
     if (borders.insideV) tblBorders["w:insideV"]  = this.buildBorderEl(borders.insideV);
@@ -425,10 +434,12 @@ export class Table {
     const cell = this.getCell(row, col);
     if (!cell) throw new Error(`Cell [${row},${col}] not found`);
     const tcPr = this.ensureCellProps(cell);
+    // CT_TcMar is an xsd:SEQUENCE — top, left, bottom, right (see the note on
+    // setTableBorders; key order here IS element order).
     tcPr["w:tcMar"] = {
       ...(margins.top    !== undefined ? { "w:top":    { $: { "w:w": String(margins.top),    "w:type": "dxa" } } } : {}),
-      ...(margins.bottom !== undefined ? { "w:bottom": { $: { "w:w": String(margins.bottom), "w:type": "dxa" } } } : {}),
       ...(margins.left   !== undefined ? { "w:left":   { $: { "w:w": String(margins.left),   "w:type": "dxa" } } } : {}),
+      ...(margins.bottom !== undefined ? { "w:bottom": { $: { "w:w": String(margins.bottom), "w:type": "dxa" } } } : {}),
       ...(margins.right  !== undefined ? { "w:right":  { $: { "w:w": String(margins.right),  "w:type": "dxa" } } } : {}),
     };
     return this;

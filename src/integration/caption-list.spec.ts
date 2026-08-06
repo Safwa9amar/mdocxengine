@@ -88,9 +88,9 @@ describe("Caption list — Table des figures / Table des tableaux", () => {
     for (const ds of datasets) {
       const table = makeStyledTable(ds.headers, ds.rows);
       await engine.document.insertTable(table);
-      const paragraphs = await engine.document.getParagraphs();
+      const blocks = await engine.document.getBlocks();
       await engine.captions.insertTableCaption(
-        paragraphs.length - 1,
+        blocks.length - 1,
         ds.title,
         "above",
       );
@@ -116,9 +116,9 @@ describe("Caption list — Table des figures / Table des tableaux", () => {
     for (const title of figures) {
       const para = makeFigurePara(`[ ${title} ]`);
       await engine.document.insertParagraph(para);
-      const paragraphs = await engine.document.getParagraphs();
+      const blocks = await engine.document.getBlocks();
       await engine.captions.insertFigureCaption(
-        paragraphs.length - 1,
+        blocks.length - 1,
         title,
       );
     }
@@ -143,8 +143,10 @@ describe("Caption list — Table des figures / Table des tableaux", () => {
   // ─── Insert List of Figures after List of Tables ──────────────────────────
 
   test("insert List of Figures after List of Tables", async () => {
-    // TOC heading + field = 2 paragraphs inserted at 0, so insert at index 2
-    await engine.captions.insertListOfFigures("List of Figures", 2);
+    // A caption list is heading + field-begin + one entry per caption + field-end.
+    // Insert AFTER all of that, or the Figures field nests inside the Tables one.
+    const tableCount = (await engine.captions.getCaptions("Table")).length;
+    await engine.captions.insertListOfFigures("List of Figures", 3 + tableCount);
 
     const xml = engine.zip.readAsText("word/document.xml")!;
     expect(xml).toContain('\\c "Figure"');
@@ -190,8 +192,8 @@ describe("Caption list — Table des figures / Table des tableaux", () => {
 
   test("insertCaptionList works with custom label", async () => {
     // Add 3 Equation captions
-    const paragraphs = await engine.document.getParagraphs();
-    const idx = paragraphs.length - 1;
+    const blocks = await engine.document.getBlocks();
+    const idx = blocks.length - 1;
     await engine.captions.insertCustomCaption(idx, "Equation", "Energy-mass equivalence E = mc²");
     await engine.captions.insertCustomCaption(idx, "Equation", "Pythagorean theorem a² + b² = c²");
     await engine.captions.insertCustomCaption(idx, "Equation", "Euler's identity e^(iπ) + 1 = 0");
