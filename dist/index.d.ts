@@ -2074,6 +2074,22 @@ export declare class MergeManager {
      * them to EACH block's xml independently (kind/tag preserved verbatim).
      */
     private remapBlocks;
+    /**
+     * Drop the source's `headerReference` / `footerReference` from any `sectPr`
+     * that rides along with a copied paragraph.
+     *
+     * Those rIds point at header/footer parts of the SOURCE package, which this
+     * merge deliberately does not copy — the target's template owns the running
+     * chrome. Left in place they are dangling relationships: a 40-header source
+     * produced ~75 references to parts that do not exist in the merged package,
+     * which the docx doctor reports as an unrepairable fatal (it cannot invent the
+     * missing parts). Removing them lets the section inherit the target's chrome,
+     * which is the behaviour the combine flow wants anyway.
+     *
+     * Everything else in the copied `sectPr` — page size, margins, break type — is
+     * preserved.
+     */
+    private stripSectionChrome;
     /** Read the source document's relationships as { rId: { type, target, targetMode } }. */
     private readSourceRels;
     /** Copy each image referenced by the blocks; return source-rId → new-rId. */

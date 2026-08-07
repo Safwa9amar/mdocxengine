@@ -131,8 +131,31 @@ export class MergeManager {
       xml = this.applyFootnoteRefMap(xml, footnoteMap);
       xml = this.applyNumIdMap(xml, numberingMap);
       xml = this.applyStyleMap(xml, styleMap);
+      xml = this.stripSectionChrome(xml);
       return { kind: b.kind, tag: b.tag, xml };
     });
+  }
+
+  /**
+   * Drop the source's `headerReference` / `footerReference` from any `sectPr`
+   * that rides along with a copied paragraph.
+   *
+   * Those rIds point at header/footer parts of the SOURCE package, which this
+   * merge deliberately does not copy — the target's template owns the running
+   * chrome. Left in place they are dangling relationships: a 40-header source
+   * produced ~75 references to parts that do not exist in the merged package,
+   * which the docx doctor reports as an unrepairable fatal (it cannot invent the
+   * missing parts). Removing them lets the section inherit the target's chrome,
+   * which is the behaviour the combine flow wants anyway.
+   *
+   * Everything else in the copied `sectPr` — page size, margins, break type — is
+   * preserved.
+   */
+  private stripSectionChrome(xml: string): string {
+    if (!xml.includes("Reference")) return xml;
+    return xml
+      .replace(/<w:(?:header|footer)Reference\b[^>]*\/>/g, "")
+      .replace(/<w:(header|footer)Reference\b[^>]*>[\s\S]*?<\/w:\1Reference>/g, "");
   }
 
   // ─── Media ─────────────────────────────────────────────────────────────────

@@ -350,4 +350,25 @@ describe("MergeManager.appendDocument — real-doc integration", () => {
       expect(rels).toContain(`Id="${rId}"`);
     }
   });
+
+  test("leaves no dangling relationship behind — including the source's header/footer refs", async () => {
+    const target = await Mdocxengine.loadFromBuffer(await docWith(["BASE-COVER"]));
+    // hanachi carries 42 headers/footers; their parts are NOT copied (the target's
+    // template owns the running chrome), so their references must not come along.
+    const partBuf = fs.readFileSync(path.resolve("samples/hanachi.docx"));
+
+    await target.merge.appendDocument(partBuf, { startOnNewPage: true });
+
+    const reopened = await Mdocxengine.loadFromBuffer(target.zip.toBuffer());
+    const xml = joinXml(await reopened.document.getBlocks());
+    const rels = reopened.zip.readAsText("word/_rels/document.xml.rels") ?? "";
+    const declared = new Set([...rels.matchAll(/Id="([^"]+)"/g)].map((m) => m[1]));
+
+    const dangling = [...xml.matchAll(/\br:(?:id|embed|link)="([^"]+)"/g)]
+      .map((m) => m[1])
+      .filter((id) => !declared.has(id));
+    expect(dangling).toEqual([]);
+    expect(xml).not.toContain("headerReference");
+    expect(xml).not.toContain("footerReference");
+  });
 });
