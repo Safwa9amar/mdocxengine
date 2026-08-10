@@ -270,8 +270,11 @@ export function applyPropsToRuns(xml: string, props: RunProps): { xml: string; w
  * `CaptionManager`'s private `eachParagraph`; duplicated rather than imported
  * because that helper is not exported and this task's scope is limited to the
  * one-line `CAPTION_PARA_STYLE` export (Decision B).
+ *
+ * Exported for `TextStyleReader`, which must walk a target's paragraphs exactly
+ * the way the write does or it would report on text the write wouldn't touch.
  */
-function eachParagraphIn(xml: string): Array<{ start: number; end: number; xml: string }> {
+export function eachParagraphIn(xml: string): Array<{ start: number; end: number; xml: string }> {
   const out: Array<{ start: number; end: number; xml: string }> = [];
   const re = /<w:p\b[^>]*?(\/?)>|<\/w:p>/g;
   const stack: number[] = [];

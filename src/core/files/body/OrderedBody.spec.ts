@@ -7,6 +7,7 @@ import {
   toBlocks,
   makeParagraphXml,
   makeParagraphNode,
+  makeStyledParagraphXml,
   paragraphText,
   paragraphStyleId,
   setParagraphText,
@@ -254,5 +255,21 @@ describe("OrderedBody — legacy-compatible exports", () => {
     expect(nodeTag(blocks[0])).toBe("w:p");
     expect(nodeTag(blocks[1])).toBe("w:tbl");
     expect(nodeTag("<w:sectPr><w:pgSz/></w:sectPr>")).toBe("w:sectPr");
+  });
+
+  // w:pPr is an ORDERED sequence (CT_PPrBase). Emitting bidi after jc/outlineLvl
+  // made Word refuse the file — and only ever on RTL paragraphs, i.e. every
+  // Arabic thesis, which is why it survived so long.
+  test("styled paragraph writes w:pPr in schema order (bidi before jc before outlineLvl)", () => {
+    const xml = makeStyledParagraphXml("العنوان", {
+      styleId: "Heading1",
+      outlineLevel: 0,
+      alignment: "right",
+      rtl: true,
+    });
+    const order = ["w:pStyle", "w:bidi", "w:jc", "w:outlineLvl"].map((t) => xml.indexOf("<" + t));
+    expect(order.every((i) => i > -1)).toBe(true);
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    expect(xml).toContain('<w:pPr><w:pStyle w:val="Heading1"/><w:bidi/><w:jc w:val="right"/><w:outlineLvl w:val="0"/></w:pPr>');
   });
 });

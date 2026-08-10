@@ -430,11 +430,15 @@ export interface StyledParagraphOptions {
  * yields a property-only spacer paragraph.
  */
 export function makeStyledParagraphXml(text: string, opts: StyledParagraphOptions = {}): string {
+  // `w:pPr` is an ORDERED sequence (CT_PPrBase): pStyle(1) … bidi(19) … jc(28)
+  // … outlineLvl(31). Emitting bidi last — after jc and outlineLvl — makes Word
+  // refuse the file, and it only ever showed on RTL paragraphs, i.e. every
+  // Arabic thesis this builder writes a heading or paragraph into.
   const pPrParts: string[] = [];
   if (opts.styleId) pPrParts.push(`<w:pStyle w:val="${escapeXmlText(opts.styleId)}"/>`);
+  if (opts.rtl) pPrParts.push(`<w:bidi/>`);
   if (opts.alignment) pPrParts.push(`<w:jc w:val="${opts.alignment}"/>`);
   if (opts.outlineLevel !== undefined) pPrParts.push(`<w:outlineLvl w:val="${opts.outlineLevel}"/>`);
-  if (opts.rtl) pPrParts.push(`<w:bidi/>`);
   const pPr = pPrParts.length ? `<w:pPr>${pPrParts.join("")}</w:pPr>` : "";
 
   const rPrParts: string[] = [];

@@ -23,11 +23,12 @@ const TABLE_OF_FIGURES_STYLE = {
   "w:next":       { $: { "w:val": "Normal" } },
   "w:uiPriority": { $: { "w:val": "99" } },
   "w:unhideWhenUsed": {},
+  // `w:pPr` is an ORDERED sequence — tabs (11) before spacing (22).
   "w:pPr": {
-    "w:spacing": { $: { "w:before": "0", "w:after": "200" } },
     "w:tabs": {
       "w:tab": { $: { "w:val": "right", "w:leader": "dot", "w:pos": "8748" } },
     },
+    "w:spacing": { $: { "w:before": "0", "w:after": "200" } },
   },
   "w:rPr": {
     "w:sz":   { $: { "w:val": "20" } },
@@ -1231,9 +1232,11 @@ export class CaptionManager {
     const pageField = bookmark
       ? `<w:fldSimple w:instr="${escapeXmlText(` PAGEREF ${bookmark} \\h `)}"><w:r>${rPr}<w:t>1</w:t></w:r></w:fldSimple>`
       : `<w:r>${rPr}<w:t>1</w:t></w:r>`;
+    // `w:pPr` is an ORDERED sequence: tabs (11) BEFORE bidi (19). With bidi first
+    // Word refuses the file — which only ever showed up on the Arabic theses.
     return (
-      `<w:p><w:pPr><w:pStyle w:val="TableofFigures"/>${rtl ? "<w:bidi/>" : ""}` +
-      `<w:tabs><w:tab w:val="right" w:leader="dot" w:pos="8748"/></w:tabs></w:pPr>` +
+      `<w:p><w:pPr><w:pStyle w:val="TableofFigures"/>` +
+      `<w:tabs><w:tab w:val="right" w:leader="dot" w:pos="8748"/></w:tabs>${rtl ? "<w:bidi/>" : ""}</w:pPr>` +
       `<w:r>${rPr}<w:t xml:space="preserve">${escapeXmlContent(entryText)}</w:t></w:r>` +
       `<w:r>${rPr}<w:tab/></w:r>` +
       pageField +

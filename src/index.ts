@@ -337,7 +337,7 @@ export type { RelationshipEntry } from "./core/PartsManagers/RelManager";
 export type { TableObject, TableRow, TableCell } from "./core/files/table/types";
 export type { FootnoteEntry } from "./core/PartsManagers/FootnoteManager";
 export type { EndnoteEntry } from "./core/PartsManagers/EndnoteManager";
-export type { TocOptions } from "./core/PartsManagers/TableOfContentsManager";
+export type { TocOptions, TocResult, TocRemoval, TypedTocSpan } from "./core/PartsManagers/TableOfContentsManager";
 export type { BookmarkEntry } from "./core/PartsManagers/CrossReferenceManager";
 export type { CitationSource } from "./core/PartsManagers/CitationManager";
 export type {
@@ -393,10 +393,23 @@ export {
   TextStyleManager,
   TARGET_SPECS,
   expandTargets,
+  eachParagraphIn,
   type TextStyleTarget,
   type TextStyleTargetInput,
   type TargetReport,
 } from "./core/PartsManagers/TextStyleManager";
+export {
+  TextStyleReader,
+  parseRunProps,
+  parseStylesIndex,
+  resolveStyleChain,
+  type ObservedRunProps,
+  type FacetKey,
+  type ValueShare,
+  type StyleFacet,
+  type TargetStyleReport,
+  type TextStyleInspection,
+} from "./core/PartsManagers/TextStyleReader";
 export { type RunProps, mergeRunProps } from "./core/ooxml/runProps";
 // Single-paragraph OOXML surgery: Word's pagination properties (keep with next,
 // keep lines together, widow/orphan control, page break before) and DIRECT run

@@ -758,6 +758,24 @@ export declare class Doc {
      * malformed individual RUN is skipped and counted, never aborting the pass.
      */
     setTextStyle(targets: readonly TextStyleTargetInput[], props: RunProps): Promise<TargetReport[]>;
+    /**
+     * READ the font / size / bold / italic / colour actually in force on the same
+     * named PARTS `setTextStyle` writes to — `body`, `headings`, `title`,
+     * `captions`, `lists`, `tables`, `footnotes`.
+     *
+     * Resolves the full OOXML cascade (docDefaults → paragraph style through its
+     * `w:basedOn` chain → character style → direct `w:rPr`) and weighs every
+     * answer by characters, so a thesis whose body is 96% Simplified Arabic 14
+     * reports exactly that rather than whichever value happened to be first.
+     * Latin and complex-script properties stay separate (`font`/`fontCs`,
+     * `sizePt`/`sizeCsPt`): in an Arabic thesis it is `w:cs` that the reader sees.
+     *
+     * A target with `paragraphs: 0` is absent from the document, which is
+     * information, not an error. Read-only — nothing is written.
+     *
+     * @throws on an unknown target name (same validation as `setTextStyle`).
+     */
+    getTextStyle(targets?: readonly TextStyleTargetInput[]): Promise<TextStyleInspection>;
     /** Delete the block at `index`. */
     deleteBlock(index: number): Promise<this>;
     /** Append a table from a row-major grid (or insert at `at`). */
@@ -1215,6 +1233,23 @@ declare interface Drawing {
     };
 }
 
+/**
+ * Every outermost `<w:p>…</w:p>` inside a block's XML, in document order. A
+ * `tables` target block is a whole `<w:tbl>` — its cell paragraphs are nested
+ * several levels deep, and this walks in regardless of depth. Mirrors
+ * `CaptionManager`'s private `eachParagraph`; duplicated rather than imported
+ * because that helper is not exported and this task's scope is limited to the
+ * one-line `CAPTION_PARA_STYLE` export (Decision B).
+ *
+ * Exported for `TextStyleReader`, which must walk a target's paragraphs exactly
+ * the way the write does or it would report on text the write wouldn't touch.
+ */
+export declare function eachParagraphIn(xml: string): Array<{
+    start: number;
+    end: number;
+    xml: string;
+}>;
+
 export declare const EMU_PER_CM = 360000;
 
 export declare const EMU_PER_INCH = 914400;
@@ -1283,6 +1318,11 @@ export declare interface EnsureStyleSpec {
  * live thesis with no signal anything went wrong.
  */
 export declare function expandTargets(targets: readonly string[]): TextStyleTarget[];
+
+/** The `ObservedRunProps` keys reported as facets, in output order. */
+declare const FACET_KEYS: readonly ["font", "fontCs", "sizePt", "sizeCsPt", "bold", "italic", "color"];
+
+export declare type FacetKey = (typeof FACET_KEYS)[number];
 
 /**
  * Represents a field, such as a page number or table of contents.
@@ -2204,6 +2244,30 @@ export declare class NumberingManager {
     appendRawDefinitions(abstractNums: any[], nums: any[]): Promise<void>;
 }
 
+/**
+ * Run properties as OBSERVED in a document — the read counterpart of
+ * {@link RunProps}, which describes what to WRITE.
+ *
+ * Every field is a tri-state: a value, `false` for a toggle explicitly turned
+ * off (`<w:b w:val="0"/>`, which must beat an inherited bold rather than be
+ * mistaken for "unspecified"), or `undefined` for "this rung of the cascade
+ * says nothing", which is what lets a lower rung show through.
+ */
+export declare interface ObservedRunProps {
+    /** Latin font — `w:rFonts/@w:ascii`, falling back to `@w:hAnsi`. */
+    font?: string;
+    /** Complex-script font — `w:rFonts/@w:cs`. What ARABIC text renders in. */
+    fontCs?: string;
+    /** Latin size in points (`w:sz`, stored as half-points). */
+    sizePt?: number;
+    /** Complex-script size in points (`w:szCs`). The size ARABIC text renders at. */
+    sizeCsPt?: number;
+    bold?: boolean;
+    italic?: boolean;
+    /** 6-digit upper-case hex, or the literal "auto". */
+    color?: string;
+}
+
 export declare type Orientation = "portrait" | "landscape";
 
 /** A node in the heading outline tree. */
@@ -2774,6 +2838,21 @@ export declare function parseOrderedDoc(documentXml: string): {
 };
 
 /**
+ * Parse the INSIDE of a `<w:rPr>` into observed properties. The read inverse of
+ * {@link mergeRunProps}: it reports only what this fragment states, never a
+ * default, so callers can merge rungs of the cascade without a lower one
+ * silently masking a higher one.
+ */
+export declare function parseRunProps(rPrInner: string): ObservedRunProps;
+
+/**
+ * Index `styles.xml`: every `<w:style>`'s run properties and `w:basedOn`, plus
+ * `w:docDefaults`. String surgery rather than an xml2js round-trip, matching
+ * every other read on this file — and cheap enough to do once per inspection.
+ */
+export declare function parseStylesIndex(stylesXml: string | null | undefined): StylesIndex;
+
+/**
  * Parse a paragraph's plain text as a hand-typed caption, or null.
  *
  * Deliberately conservative — a false positive rewrites a body paragraph into a
@@ -2910,6 +2989,21 @@ export declare interface RepairResult extends DoctorReport {
     /** True when `buffer` differs from what was passed in. */
     changed: boolean;
 }
+
+/**
+ * Resolve a style through its `w:basedOn` ancestry, base-first so the nearest
+ * definition wins. Returns the chain too: an AI reporting "Heading1, which
+ * inherits from Normal" is telling the student where to make the change.
+ *
+ * A dangling reference is the NORMAL state in this corpus (the seed thesis has
+ * styles based on a `Normal` it never defines), so a missing link truncates the
+ * walk instead of throwing.
+ */
+export declare function resolveStyleChain(styleId: string, index: StylesIndex): {
+    chain: string[];
+    props: ObservedRunProps;
+    defined: boolean;
+};
 
 export declare interface RevisionEntry {
     id: number;
@@ -3468,6 +3562,14 @@ declare interface SplitDocument {
 /** Strip the common inline markdown markers, leaving plain text. */
 export declare function stripInlineMarkdown(s: string): string;
 
+declare interface StyleDef {
+    id: string;
+    type: string;
+    name?: string;
+    basedOn?: string;
+    props: ObservedRunProps;
+}
+
 /** Options for {@link makeStyledParagraphXml} — a fully-formatted single-run paragraph. */
 export declare interface StyledParagraphOptions {
     styleId?: string;
@@ -3488,6 +3590,19 @@ export declare interface StyleEntry {
     id: string;
     name: string;
     type: string;
+}
+
+/** What one property resolves to across a whole target. */
+export declare interface StyleFacet extends ValueShare {
+    /** Runner-up values, share-descending — present only when the target is not uniform. */
+    others?: ValueShare[];
+}
+
+declare interface StylesIndex {
+    byId: Map<string, StyleDef>;
+    /** The `w:type="paragraph" w:default="1"` style a paragraph with no `w:pStyle` resolves to. */
+    defaultParagraphStyleId: string;
+    docDefaults: ObservedRunProps;
 }
 
 export declare class StylesManager {
@@ -3835,21 +3950,115 @@ export declare interface TableObject {
     "w:tr"?: TableRow | TableRow[];
 }
 
+/**
+ * The document's Table of Contents — Word's References → Table of Contents.
+ *
+ * Every read/write goes through DocumentManager's ORDER-PRESERVING block API
+ * (OrderedBody string splicing). Rebuilding `document.xml` through an XML object
+ * model regroups the body by tag — hoisting every table away from its paragraphs
+ * — and trims the whitespace-only runs Word uses between words.
+ *
+ * Like Word, the table is a `TOC` FIELD, so it renumbers itself on repagination.
+ * Unlike Word, it is written PRE-POPULATED with one entry per heading (each a
+ * hyperlink to a `_Toc…` bookmark plus a `PAGEREF` page number), so it reads
+ * correctly in the app and in viewers that never update fields.
+ */
 export declare class TableOfContentsManager {
     private zip;
+    private doc;
+    private styles;
+    /** Deepest level whose TOC style is known registered — NOT a boolean: the same
+     *  manager is reused across calls (the engine is cached per thesis), and a
+     *  second call at depth 5 after a first at depth 3 must still register TOC4/5
+     *  or those entries silently render as body text. */
+    private registeredDepth;
     constructor(zip: default_2);
-    private readDocument;
-    private writeDocument;
+    /** Register TOCHeading + TOC1…TOC{depth} into styles.xml the first time. */
+    private ensureStyles;
+    /**
+     * A bookmark allocator handing out a DISTINCT id/name per call.
+     *
+     * document.xml is only re-read once: a batch that mints many bookmarks before
+     * saving would otherwise stamp the same `w:id`/`_Toc…` on all of them, leaving
+     * every entry's PAGEREF pointing at the first heading.
+     */
+    private bookmarkSeries;
+    /**
+     * The name of a bookmark PAGEREF can already aim at, or null.
+     *
+     * Only `_Toc…`/`_Ref…` bookmarks count: Word's own `_GoBack` marks the last
+     * edit position and moves, so an entry anchored to it would drift.
+     */
+    private existingAnchor;
+    /** Wrap a heading paragraph in a bookmark so PAGEREF/hyperlink can find it. */
+    private addAnchor;
+    /** The `TOC` field instruction, mirroring the switches Word writes. */
     private buildInstrText;
-    private buildTocParagraphs;
+    /** One pre-populated entry: `<heading text><dot leader tab><page number>`. */
+    private buildEntryParagraph;
+    /** Every field instruction in a block, concatenated (Word splits them across runs). */
+    private instructionsIn;
     /**
-     * Insert a Table of Contents at the given body paragraph index (default: 0).
+     * True when the block opens a table of CONTENTS field.
+     *
+     * `TOC \c "Figure"` is a caption list (List of Figures / List of Tables) and is
+     * deliberately excluded — replacing the contents must never eat one. A
+     * `PAGEREF _Toc…` entry does not match either: the needle is `TOC \`.
      */
-    insertTOC(options?: TocOptions, index?: number): Promise<void>;
+    private isTocField;
     /**
-     * Remove all TOC paragraphs (TOCHeading + paragraphs containing a TOC field).
+     * Insert a Table of Contents at the given BODY BLOCK index (default 0 = top).
+     *
+     * Collects every heading down to `headingDepth`, anchoring each one so the
+     * entries link and paginate. Headings are recognised by style (`Heading1`,
+     * `Titre 1`, `Title`) OR by their own outline level, so imported theses whose
+     * headings carry no heading style are still collected — as long as something
+     * marked them as headings (use `set_heading` / infer_structure first if not).
      */
-    removeTOC(): Promise<void>;
+    insertTOC(options?: TocOptions, index?: number): Promise<TocResult>;
+    /**
+     * Remove every Table of Contents — its title, the field, and all pre-populated
+     * entry paragraphs. Caption lists (`TOC \c "Figure"`) are left alone.
+     *
+     * A TOC field SPANS paragraphs (begin … separate … entries … end), so this
+     * walks from the paragraph holding the instruction to the one holding the
+     * matching `fldChar end` rather than deleting a single paragraph.
+     */
+    removeTOC(): Promise<TocRemoval>;
+    /** True when the document already carries a Table of Contents field. */
+    hasTOC(): Promise<boolean>;
+    /** Block indices that sit INSIDE any field (a real TOC, a caption list, …). */
+    private fieldBlockIndices;
+    /**
+     * Does this paragraph read as a hand-typed contents line?
+     *
+     * Two signals, BOTH required: it ends in a page number, and it separates that
+     * number from the title with a leader — typed dots, or a real tab. A tab
+     * carries no text, so "المقدمة<tab>5" arrives as "المقدمة5"; the XML is what
+     * says which it was.
+     */
+    private isTypedTocEntry;
+    /**
+     * Find a table of contents the student TYPED as ordinary paragraphs.
+     *
+     * This is the one the model could not delete: it is not a field, so
+     * {@link removeTOC} never saw it, and the model was left guessing a block
+     * range — "صعوبة تقنية في تحديد نهاية الفهرس اليدوي" — and deleting the wrong
+     * thing. Here the span is computed exactly.
+     *
+     * Deliberately conservative: at least `minEntries` consecutive entry lines
+     * (single blank lines tolerated), and anything inside a real field is skipped
+     * so a generated table or a list of figures can never be mistaken for one.
+     */
+    findTypedTOC(minEntries?: number): Promise<TypedTocSpan | null>;
+    /**
+     * Delete a hand-typed table of contents (title + every entry line).
+     *
+     * DESTRUCTIVE in a way {@link removeTOC} is not: these are paragraphs the
+     * student wrote, not a field this engine generated. Callers must have the
+     * student's agreement.
+     */
+    removeTypedTOC(span?: TypedTocSpan): Promise<TocRemoval>;
 }
 
 declare interface TableProperties {
@@ -3947,6 +4156,27 @@ declare interface TargetSpec {
     part: "body" | "footnotes";
 }
 
+/** What a target's text is formatted with, and where that formatting comes from. */
+export declare interface TargetStyleReport {
+    target: TextStyleTarget;
+    /** Paragraphs matched (table-cell paragraphs for `tables`). 0 ⇒ this part is absent. */
+    paragraphs: number;
+    /** Characters weighed. 0 ⇒ matched paragraphs exist but are empty. */
+    characters: number;
+    /** The style id `set_text_style` would patch for this target. */
+    styleId: string;
+    /** Is that style actually DEFINED in `styles.xml`? Dangling refs are normal here. */
+    styleDefined: boolean;
+    /** `w:basedOn` chain walked, nearest first — `["Heading1", "Normal"]`. */
+    styleChain: string[];
+    /** What the style chain alone resolves to, before any direct run formatting. */
+    styleProps: ObservedRunProps;
+    /** What the text ACTUALLY renders with, per property. The answer to the question. */
+    effective: Record<FacetKey, StyleFacet>;
+    /** True when any property has more than one value across this target. */
+    mixed: boolean;
+}
+
 export declare interface TextBoxOptions {
     text: string;
     position?: ShapePosition;
@@ -3995,6 +4225,13 @@ declare interface TextNode {
     _: string;
 }
 
+/** {@link TextStyleReader.inspect} output. */
+export declare interface TextStyleInspection {
+    /** `styles.xml`'s `w:docDefaults` — the bottom rung, inherited by everything. */
+    documentDefaults: ObservedRunProps;
+    targets: TargetStyleReport[];
+}
+
 /**
  * Apply a font/size/bold/italic/colour change to named PARTS of a thesis
  * ("body", "heading3", "captions", "footnotes", …).
@@ -4031,6 +4268,33 @@ export declare class TextStyleManager {
     private applyFootnotes;
 }
 
+/**
+ * Report what each named PART of a document is actually formatted with.
+ *
+ * @see TextStyleManager for the write side. Any change to `matchesTarget` or
+ * `TARGET_SPECS` reaches both, which is the point: a read that scoped its
+ * targets differently from the write would answer a question about text the
+ * write then wouldn't touch.
+ */
+export declare class TextStyleReader {
+    private zip;
+    private doc;
+    constructor(zip: default_2);
+    /**
+     * @param targets    Already-expanded targets (see `expandTargets`).
+     * @param blockInfos `Doc.blocks()` output, index-aligned 1:1 with
+     *                   `DocumentManager.getBlocks()` — `matchesTarget` needs the
+     *                   `headingLevel`/`styleId` a raw `BodyBlock` doesn't carry.
+     */
+    inspect(targets: readonly TextStyleTarget[], blockInfos: readonly BlockInfo[]): Promise<TextStyleInspection>;
+    /**
+     * Walk every paragraph in a block (cell paragraphs included, at any depth for
+     * a `tables` target) and tally each run's effective properties.
+     */
+    private collect;
+    private report;
+}
+
 export declare type TextStyleTarget = "body" | "heading1" | "heading2" | "heading3" | "heading4" | "heading5" | "heading6" | "title" | "captions" | "lists" | "tables" | "footnotes";
 
 export declare type TextStyleTargetInput = TextStyleTarget | "headings";
@@ -4042,10 +4306,38 @@ export declare type TextStyleTargetInput = TextStyleTarget | "headings";
 export declare function toBlocks(bodyChildren: BodyBlock[]): BodyBlock[];
 
 export declare interface TocOptions {
+    /** Deepest heading level collected (1–9). Default 3. */
     headingDepth?: number;
+    /** Heading shown above the table (pass "" for none). Default "Table of Contents". */
     title?: string;
+    /** Show page numbers with a dot leader. Default true. */
     includePageNumbers?: boolean;
+    /** Make the entries clickable links to their headings. Default true. */
     useHyperlinks?: boolean;
+    /** Write the table right-to-left (Arabic thesis). Default false. */
+    rtl?: boolean;
+    /** Delete any table of contents already in the document first. Default true. */
+    replaceExisting?: boolean;
+}
+
+/** What {@link TableOfContentsManager.removeTOC} deleted. */
+export declare interface TocRemoval {
+    /** Blocks deleted across every table of contents found. */
+    removed: number;
+    /** Block index the FIRST removed table started at, or -1 if none. */
+    at: number;
+}
+
+/** What {@link TableOfContentsManager.insertTOC} actually wrote. */
+export declare interface TocResult {
+    /** Block index the table now starts at. */
+    atIndex: number;
+    /** One per heading collected. */
+    entries: number;
+    /** Deepest heading level collected. */
+    headingDepth: number;
+    /** How many blocks a replaced table occupied (0 when none was replaced). */
+    replaced: number;
 }
 
 export declare class TrackedChangesManager {
@@ -4079,6 +4371,24 @@ export declare const twipsToCm: (twips: number) => number;
 export declare const twipsToInches: (twips: number) => number;
 
 /**
+ * A table of contents the student TYPED BY HAND — ordinary paragraphs reading
+ * "المقدمة .......... 5", not a `TOC` field. It is the usual state of an
+ * imported thesis, and no field-based operation can see it.
+ */
+export declare interface TypedTocSpan {
+    /** First block of the typed table (its title, when it has one). */
+    startIndex: number;
+    /** Last block, INCLUSIVE. */
+    endIndex: number;
+    /** The heading above the entries ("الفهرس", "Table des matières"), or null. */
+    title: string | null;
+    /** How many entry lines it holds. */
+    entries: number;
+    /** The first few entry lines, for showing the student what was found. */
+    sample: string[];
+}
+
+/**
  * Rewrite a paragraph's `<w:pPr>` through `mutate`, which receives the current
  * inner XML ("" when the paragraph has no `w:pPr` yet) and returns the new one.
  * The result is canonicalised into `CT_PPr` order and written back; a `w:pPr`
@@ -4091,6 +4401,14 @@ export declare const twipsToInches: (twips: number) => number;
  * `w:pPr` cannot be cleanly parsed (see `canonicalOrder.splitTopLevelElements`).
  */
 export declare function updateParagraphProps(xml: string, mutate: (pPrInner: string) => string): string;
+
+/** One value of one property, with the share of characters carrying it. */
+export declare interface ValueShare {
+    /** `null` means "the cascade specifies nothing here" — Word falls back to its own default. */
+    value: string | number | boolean | null;
+    /** Share of this target's characters, 0–1, rounded to 3 decimals. */
+    share: number;
+}
 
 declare type xmlFile = {
     fileName: string;

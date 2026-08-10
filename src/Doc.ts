@@ -36,6 +36,7 @@ import {
   type TextStyleTargetInput,
   type TargetReport,
 } from "./core/PartsManagers/TextStyleManager";
+import { TextStyleReader, type TextStyleInspection } from "./core/PartsManagers/TextStyleReader";
 import type { RunProps } from "./core/ooxml/runProps";
 
 const APPEND = Number.MAX_SAFE_INTEGER;
@@ -706,6 +707,31 @@ export class Doc {
     const expanded = expandTargets(targets as readonly string[]);
     const infos = await this.blocks();
     return new TextStyleManager(this.engine.zip).apply(expanded, props, infos);
+  }
+
+  /**
+   * READ the font / size / bold / italic / colour actually in force on the same
+   * named PARTS `setTextStyle` writes to — `body`, `headings`, `title`,
+   * `captions`, `lists`, `tables`, `footnotes`.
+   *
+   * Resolves the full OOXML cascade (docDefaults → paragraph style through its
+   * `w:basedOn` chain → character style → direct `w:rPr`) and weighs every
+   * answer by characters, so a thesis whose body is 96% Simplified Arabic 14
+   * reports exactly that rather than whichever value happened to be first.
+   * Latin and complex-script properties stay separate (`font`/`fontCs`,
+   * `sizePt`/`sizeCsPt`): in an Arabic thesis it is `w:cs` that the reader sees.
+   *
+   * A target with `paragraphs: 0` is absent from the document, which is
+   * information, not an error. Read-only — nothing is written.
+   *
+   * @throws on an unknown target name (same validation as `setTextStyle`).
+   */
+  async getTextStyle(
+    targets: readonly TextStyleTargetInput[] = ["body", "headings", "title", "captions", "lists", "tables", "footnotes"],
+  ): Promise<TextStyleInspection> {
+    const expanded = expandTargets(targets as readonly string[]);
+    const infos = await this.blocks();
+    return new TextStyleReader(this.engine.zip).inspect(expanded, infos);
   }
 
   /** Delete the block at `index`. */
