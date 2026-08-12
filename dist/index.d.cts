@@ -3332,6 +3332,13 @@ export declare interface SectionInfo {
     pageNumberFormat: string | null;
     /** This section's own w:pgNumType start value, if set. */
     pageNumberStart: number | null;
+    /**
+     * Page size + margins for this section, in twips. A section's own w:sectPr
+     * wins; a sectPr that omits w:pgSz/w:pgMar (every section our own
+     * addSectionBreak creates) inherits the body sectPr, which is what Word
+     * renders. null only when the body sectPr declares neither.
+     */
+    page: SectionPageGeometry | null;
 }
 
 export declare interface SectionLayout {
@@ -3398,6 +3405,20 @@ export declare interface SectionMargins {
     header?: number;
     footer?: number;
     gutter?: number;
+}
+
+/** A section's page geometry in twips (1440 = 1 inch), inheritance resolved. */
+declare interface SectionPageGeometry {
+    widthTwips: number;
+    heightTwips: number;
+    margins: {
+        top: number;
+        bottom: number;
+        left: number;
+        right: number;
+        header: number;
+        footer: number;
+    };
 }
 
 export declare interface SectionPageSize {

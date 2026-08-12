@@ -304,4 +304,26 @@ describe("Doc layout / section verbs", () => {
     await expect(doc.setSectionPageBorders(idx, { style: "single", color: "red", widthPt: 1 }))
       .rejects.toThrow(/6-digit hex/);
   });
+
+  test("sections() reports page geometry, inheriting the body sectPr", async () => {
+    const doc = await Doc.open(INPUT);
+    const base = await doc.sections();
+    expect(base[0].page).not.toBeNull();
+    expect(base[0].page!.widthTwips).toBeGreaterThan(0);
+    expect(base[0].page!.heightTwips).toBeGreaterThan(0);
+    expect(base[0].page!.margins.top).toBeGreaterThanOrEqual(0);
+
+    // A section made by startOnNewPage writes only <w:type/> — no pgSz/pgMar —
+    // so it must inherit the body sectPr's geometry rather than report null.
+    await doc.addHeading("Part Two", 1);
+    const headingIdx = (await doc.blocks()).length - 1;
+    await doc.startOnNewPage(headingIdx);
+
+    const after = await doc.sections();
+    expect(after.length).toBeGreaterThan(base.length);
+    const inherited = after[after.length - 2]; // the section the break created
+    expect(inherited.page).not.toBeNull();
+    expect(inherited.page!.widthTwips).toBe(base[0].page!.widthTwips);
+    expect(inherited.page!.heightTwips).toBe(base[0].page!.heightTwips);
+  });
 });

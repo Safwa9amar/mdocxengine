@@ -387,6 +387,13 @@ export interface SectionEditResult {
   totalSections: number;
 }
 
+/** A section's page geometry in twips (1440 = 1 inch), inheritance resolved. */
+export interface SectionPageGeometry {
+  widthTwips: number;
+  heightTwips: number;
+  margins: { top: number; bottom: number; left: number; right: number; header: number; footer: number };
+}
+
 export interface SectionInfo {
   /** Section position in document order (0-based; same order as getSections()). */
   index: number;
@@ -418,6 +425,13 @@ export interface SectionInfo {
   pageNumberFormat: string | null;
   /** This section's own w:pgNumType start value, if set. */
   pageNumberStart: number | null;
+  /**
+   * Page size + margins for this section, in twips. A section's own w:sectPr
+   * wins; a sectPr that omits w:pgSz/w:pgMar (every section our own
+   * addSectionBreak creates) inherits the body sectPr, which is what Word
+   * renders. null only when the body sectPr declares neither.
+   */
+  page: SectionPageGeometry | null;
 }
 
 type BreakType = "nextPage" | "evenPage" | "oddPage";
@@ -1287,6 +1301,27 @@ export class Doc {
     let header: HeaderFooterContent | null = null;
     let footer: HeaderFooterContent | null = null;
 
+    // The body sectPr is always the last entry; it is what a section omitting
+    // w:pgSz/w:pgMar inherits.
+    const bodyEntry = entries[entries.length - 1];
+    const resolveGeometry = (e: (typeof entries)[number] | undefined): SectionPageGeometry | null => {
+      const size = e?.pageSize ?? bodyEntry?.pageSize;
+      const mar = e?.margins ?? bodyEntry?.margins;
+      if (!size) return null;
+      return {
+        widthTwips: size.width,
+        heightTwips: size.height,
+        margins: {
+          top: mar?.top ?? 1440,
+          bottom: mar?.bottom ?? 1440,
+          left: mar?.left ?? 1440,
+          right: mar?.right ?? 1440,
+          header: mar?.header ?? 720,
+          footer: mar?.footer ?? 720,
+        },
+      };
+    };
+
     for (let k = 0; k < entries.length; k++) {
       const prev = entries[k - 1];
       const prevBreakBlock =
@@ -1314,6 +1349,7 @@ export class Doc {
         // field renders with (it travels with the inherited part).
         pageNumberFormat: own.pageNumberType?.format ?? footer?.pageFormat ?? null,
         pageNumberStart: own.pageNumberType?.start ?? null,
+        page: resolveGeometry(entries[k]),
       });
     }
     return out;
