@@ -1,6 +1,7 @@
 import { describe, test, expect } from "vitest";
 import path from "path";
-import { Doc } from "./Doc";
+import { Doc, resolveSectionPageGeometry } from "./Doc";
+import type { SectionEntry } from "./core/PartsManagers/SectionManager";
 
 const INPUT = path.resolve("samples/example.docx");
 
@@ -308,10 +309,14 @@ describe("Doc layout / section verbs", () => {
   test("sections() reports page geometry, inheriting the body sectPr", async () => {
     const doc = await Doc.open(INPUT);
     const base = await doc.sections();
-    expect(base[0].page).not.toBeNull();
-    expect(base[0].page!.widthTwips).toBeGreaterThan(0);
-    expect(base[0].page!.heightTwips).toBeGreaterThan(0);
-    expect(base[0].page!.margins.top).toBeGreaterThanOrEqual(0);
+    // samples/example.docx's single sectPr, read straight off the raw XML —
+    // an exact match proves these are READ, not defaulted (header/footer are
+    // 708, not the 720 fallback, which a default-firing bug would miss).
+    expect(base[0].page).toEqual({
+      widthTwips: 11906,
+      heightTwips: 16838,
+      margins: { top: 1440, bottom: 1440, left: 1440, right: 1440, header: 708, footer: 708, gutter: 0 },
+    });
 
     // A section made by startOnNewPage writes only <w:type/> — no pgSz/pgMar —
     // so it must inherit the body sectPr's geometry rather than report null.
@@ -325,5 +330,46 @@ describe("Doc layout / section verbs", () => {
     expect(inherited.page).not.toBeNull();
     expect(inherited.page!.widthTwips).toBe(base[0].page!.widthTwips);
     expect(inherited.page!.heightTwips).toBe(base[0].page!.heightTwips);
+    // Margins are the half of the resolution that has fallbacks — if the
+    // body-margin lookup were deleted and every section defaulted instead,
+    // this equality (708/708/0, not 720/720/0) is what would catch it.
+    expect(inherited.page!.margins).toEqual(base[0].page!.margins);
+  });
+
+  test("resolveSectionPageGeometry: own geometry wins, missing geometry inherits from the body entry, no geometry anywhere is null", () => {
+    const own: SectionEntry = {
+      index: 0,
+      isFinal: false,
+      pageSize: { width: 100, height: 200, orientation: "portrait" },
+      margins: { top: 10, bottom: 20, left: 30, right: 40, header: 5, footer: 6, gutter: 7 },
+      headerRefs: [],
+      footerRefs: [],
+    };
+    const body: SectionEntry = {
+      index: 1,
+      isFinal: true,
+      pageSize: { width: 999, height: 888, orientation: "portrait" },
+      margins: { top: 91, bottom: 92, left: 93, right: 94, header: 95, footer: 96, gutter: 97 },
+      headerRefs: [],
+      footerRefs: [],
+    };
+    const bare: SectionEntry = { index: 2, isFinal: false, headerRefs: [], footerRefs: [] };
+
+    // Branch 1: a section's own geometry wins over the body's.
+    expect(resolveSectionPageGeometry(own, body)).toEqual({
+      widthTwips: 100,
+      heightTwips: 200,
+      margins: { top: 10, bottom: 20, left: 30, right: 40, header: 5, footer: 6, gutter: 7 },
+    });
+
+    // Branch 2: a bare entry (addSectionBreak's own output) inherits the body's.
+    expect(resolveSectionPageGeometry(bare, body)).toEqual({
+      widthTwips: 999,
+      heightTwips: 888,
+      margins: { top: 91, bottom: 92, left: 93, right: 94, header: 95, footer: 96, gutter: 97 },
+    });
+
+    // Branch 3: no geometry anywhere (no own, no body) is null, not defaults.
+    expect(resolveSectionPageGeometry(bare, undefined)).toBeNull();
   });
 });

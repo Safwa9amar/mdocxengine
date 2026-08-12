@@ -326,6 +326,7 @@ export type {
   FooterOptions,
   SectionEditResult,
   SectionInfo,
+  SectionPageGeometry,
 } from "./Doc";
 export type { BodyBlock, BlockKind } from "./core/files/body/OrderedBody";
 export type { StyleEntry } from "./core/PartsManagers/StylesManager";

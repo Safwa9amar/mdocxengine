@@ -391,7 +391,53 @@ export interface SectionEditResult {
 export interface SectionPageGeometry {
   widthTwips: number;
   heightTwips: number;
-  margins: { top: number; bottom: number; left: number; right: number; header: number; footer: number };
+  margins: {
+    top: number;
+    bottom: number;
+    left: number;
+    right: number;
+    header: number;
+    footer: number;
+    gutter: number;
+  };
+}
+
+const DEFAULT_MARGIN_TWIPS = 1440; // 1in
+const DEFAULT_HF_TWIPS = 720;      // 0.5in — header/footer distance from the page edge
+const DEFAULT_GUTTER_TWIPS = 0;    // no binding allowance unless the document asks for one
+
+/**
+ * Resolve one section's page geometry, falling back to the body sectPr's.
+ *
+ * This fallback is NOT an ECMA-376 rule — the spec does not make a section
+ * inherit another section's w:pgSz/w:pgMar; an omitted one falls back to the
+ * *application* default (this repo's own parseSectPr encodes that as Letter,
+ * 12240x15840). The fallback exists because addSectionBreak writes a bare
+ * `<w:sectPr><w:type/></w:sectPr>` with no geometry of its own — that gap is
+ * ours, not the spec's, and addSectionBreak arguably ought to write full
+ * geometry instead. Until then, treating the body sectPr's geometry as this
+ * section's is what lets the app paginate against the real page size.
+ */
+export function resolveSectionPageGeometry(
+  entry: SectionEntry,
+  bodyEntry: SectionEntry | undefined,
+): SectionPageGeometry | null {
+  const size = entry.pageSize ?? bodyEntry?.pageSize;
+  const mar = entry.margins ?? bodyEntry?.margins;
+  if (!size) return null;
+  return {
+    widthTwips: size.width,
+    heightTwips: size.height,
+    margins: {
+      top: mar?.top ?? DEFAULT_MARGIN_TWIPS,
+      bottom: mar?.bottom ?? DEFAULT_MARGIN_TWIPS,
+      left: mar?.left ?? DEFAULT_MARGIN_TWIPS,
+      right: mar?.right ?? DEFAULT_MARGIN_TWIPS,
+      header: mar?.header ?? DEFAULT_HF_TWIPS,
+      footer: mar?.footer ?? DEFAULT_HF_TWIPS,
+      gutter: mar?.gutter ?? DEFAULT_GUTTER_TWIPS,
+    },
+  };
 }
 
 export interface SectionInfo {
@@ -426,10 +472,14 @@ export interface SectionInfo {
   /** This section's own w:pgNumType start value, if set. */
   pageNumberStart: number | null;
   /**
-   * Page size + margins for this section, in twips. A section's own w:sectPr
-   * wins; a sectPr that omits w:pgSz/w:pgMar (every section our own
-   * addSectionBreak creates) inherits the body sectPr, which is what Word
-   * renders. null only when the body sectPr declares neither.
+   * Page size + margins for this section, in twips, via {@link resolveSectionPageGeometry}.
+   * A section's own w:sectPr wins; the fallback to the body sectPr's geometry
+   * is not an ECMA-376 rule (an omitted w:pgSz's real fallback is the
+   * application default, e.g. Letter) — it exists because addSectionBreak
+   * writes a bare `<w:sectPr><w:type/></w:sectPr>` with no geometry of its
+   * own, which is our own gap and arguably something addSectionBreak ought
+   * to fix by writing full geometry. null only when the body sectPr declares
+   * no page size at all.
    */
   page: SectionPageGeometry | null;
 }
@@ -1301,26 +1351,12 @@ export class Doc {
     let header: HeaderFooterContent | null = null;
     let footer: HeaderFooterContent | null = null;
 
-    // The body sectPr is always the last entry; it is what a section omitting
-    // w:pgSz/w:pgMar inherits.
-    const bodyEntry = entries[entries.length - 1];
-    const resolveGeometry = (e: (typeof entries)[number] | undefined): SectionPageGeometry | null => {
-      const size = e?.pageSize ?? bodyEntry?.pageSize;
-      const mar = e?.margins ?? bodyEntry?.margins;
-      if (!size) return null;
-      return {
-        widthTwips: size.width,
-        heightTwips: size.height,
-        margins: {
-          top: mar?.top ?? 1440,
-          bottom: mar?.bottom ?? 1440,
-          left: mar?.left ?? 1440,
-          right: mar?.right ?? 1440,
-          header: mar?.header ?? 720,
-          footer: mar?.footer ?? 720,
-        },
-      };
-    };
+    // The body sectPr — found by isFinal, not position, so this survives any
+    // reordering of getSections(). Falling back to its geometry for a section
+    // that omits w:pgSz/w:pgMar is not ECMA-376 behaviour — see
+    // resolveSectionPageGeometry's doc comment — it works around the bare
+    // sectPr addSectionBreak writes, not the spec.
+    const bodyEntry = entries.find((e) => e.isFinal) ?? entries[entries.length - 1];
 
     for (let k = 0; k < entries.length; k++) {
       const prev = entries[k - 1];
@@ -1349,7 +1385,7 @@ export class Doc {
         // field renders with (it travels with the inherited part).
         pageNumberFormat: own.pageNumberType?.format ?? footer?.pageFormat ?? null,
         pageNumberStart: own.pageNumberType?.start ?? null,
-        page: resolveGeometry(entries[k]),
+        page: resolveSectionPageGeometry(own, bodyEntry),
       });
     }
     return out;

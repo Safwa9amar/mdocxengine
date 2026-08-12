@@ -3333,10 +3333,14 @@ export declare interface SectionInfo {
     /** This section's own w:pgNumType start value, if set. */
     pageNumberStart: number | null;
     /**
-     * Page size + margins for this section, in twips. A section's own w:sectPr
-     * wins; a sectPr that omits w:pgSz/w:pgMar (every section our own
-     * addSectionBreak creates) inherits the body sectPr, which is what Word
-     * renders. null only when the body sectPr declares neither.
+     * Page size + margins for this section, in twips, via {@link resolveSectionPageGeometry}.
+     * A section's own w:sectPr wins; the fallback to the body sectPr's geometry
+     * is not an ECMA-376 rule (an omitted w:pgSz's real fallback is the
+     * application default, e.g. Letter) — it exists because addSectionBreak
+     * writes a bare `<w:sectPr><w:type/></w:sectPr>` with no geometry of its
+     * own, which is our own gap and arguably something addSectionBreak ought
+     * to fix by writing full geometry. null only when the body sectPr declares
+     * no page size at all.
      */
     page: SectionPageGeometry | null;
 }
@@ -3408,7 +3412,7 @@ export declare interface SectionMargins {
 }
 
 /** A section's page geometry in twips (1440 = 1 inch), inheritance resolved. */
-declare interface SectionPageGeometry {
+export declare interface SectionPageGeometry {
     widthTwips: number;
     heightTwips: number;
     margins: {
@@ -3418,6 +3422,7 @@ declare interface SectionPageGeometry {
         right: number;
         header: number;
         footer: number;
+        gutter: number;
     };
 }
 
