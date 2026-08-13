@@ -413,6 +413,53 @@ declare type ChapterSeparator_3 = "hyphen" | "period" | "colon" | "emDash" | "en
 /** Check a .docx held as bytes. Read-only — the buffer is never modified. */
 export declare function checkDocxBuffer(buffer: Buffer): Promise<DoctorReport>;
 
+/** A picture placed in a header/footer part, with the geometry needed to paint
+ *  it where Word paints it. See {@link extractChromeDrawings}. */
+export declare interface ChromeDrawing {
+    /** The part-local `r:embed` id — resolution detail, kept for debugging. */
+    embedId: string;
+    /** Media file name inside `word/media` (e.g. "image1.png"), null if unresolved. */
+    image: string | null;
+    extent: {
+        cxEmu: number;
+        cyEmu: number;
+    };
+    /** Floating (`wp:anchor`) rather than in the text flow (`wp:inline`). */
+    anchored: boolean;
+    /** Word's "Behind Text" — paints under the body, not over it. */
+    behindDoc: boolean;
+    /** "none" | "square" | "tight" | "through" | "topAndBottom" | "inline" */
+    wrap: string;
+    posH: ChromeDrawingAxis;
+    posV: ChromeDrawingAxis;
+    duotone: ChromeDuotone | null;
+    /** Alt text from `wp:docPr@descr`. */
+    descr: string | null;
+}
+
+/** One placed axis of an anchored drawing. `offsetEmu` is signed — decorative
+ *  full-page art is routinely offset NEGATIVELY so it overflows its anchor. */
+export declare interface ChromeDrawingAxis {
+    /** OOXML frame of reference: "page" | "margin" | "column" | "paragraph" | … */
+    relativeTo: string;
+    offsetEmu: number | null;
+    /** Named alignment ("center", "right") when used instead of an offset. */
+    align: string | null;
+}
+
+/** Word's "Recolor" on a picture: the stored bytes are painted between two
+ *  colours rather than shown as-is. `dark`/`light` are 6-hex when the file names
+ *  a literal colour; `*Scheme` carries a theme slot ("accent4") to resolve
+ *  against theme1.xml. `shade`/`satMod` are fractions (0.45 = 45%). */
+export declare interface ChromeDuotone {
+    dark: string | null;
+    darkScheme: string | null;
+    light: string | null;
+    lightScheme: string | null;
+    shade: number | null;
+    satMod: number | null;
+}
+
 /** One logo image embedded inside an applied header/footer part. `token` is a
  *  unique placeholder present in the region XML (e.g. inside `<a:blip r:embed>`),
  *  replaced with the part-local relationship id once the bytes are embedded. */
@@ -687,6 +734,8 @@ export declare interface DetailedBlockInfo extends BlockInfo {
 export declare class Doc {
     /** Escape hatch: the underlying engine + all its managers. */
     readonly engine: Mdocxengine;
+    /** theme1.xml's colour scheme, parsed once per Doc (slot → 6-hex). */
+    private themeColors;
     private constructor();
     /** Open a document from a file path or an in-memory buffer. */
     static open(source: string | Buffer): Promise<Doc>;
@@ -1017,8 +1066,50 @@ export declare class Doc {
      * read/parse failure, so chrome extraction can never throw.
      */
     private readHeaderFooterPart;
+    /**
+     * Fill in what {@link extractChromeDrawings} could not know from the part XML
+     * alone: which media file each `r:embed` points at (resolved against the
+     * part's OWN `_rels`), and the hex behind any theme-slot recolour.
+     *
+     * Mutates in place — the drawings were just built for this content object and
+     * have no other reader yet.
+     */
+    private resolveChromeDrawings;
+    /** Theme slot ("accent4", "dk1"…) → 6-hex from theme1.xml's `<a:clrScheme>`.
+     *  `<a:sysClr>` carries the resolved value in `lastClr`. Slots the document
+     *  does not define fall back to Word's built-in Office palette, which is what
+     *  Word itself paints for a package with no theme part. null when the slot is
+     *  not a colour-scheme name at all. */
+    private resolveThemeColor;
     /** Best-effort delete of a header/footer part by its relationship id (cleanup). */
     private removeHeaderFooterByRel;
+    /**
+     * Read the artwork-bearing paragraphs out of the header/footer part behind
+     * `relId`, together with the bytes each one's images resolve to.
+     *
+     * Setting a section's header/footer text builds a BRAND-NEW part and deletes
+     * the old one — which silently destroyed full-page decorative frames, the
+     * near-universal shape of an Algerian thesis cover (a `<wp:anchor behindDoc>`
+     * picture living in the header, drawn behind the whole page). The student's
+     * only clue was the border vanishing. So the artwork is lifted out first and
+     * replanted by {@link carryChromeDrawings} into the replacement part.
+     *
+     * Images are carried as BYTES, not relationship ids: `r:embed` resolves against
+     * the part's own `_rels`, so an id from the old part means nothing in the new
+     * one and would leave Word showing a repair prompt.
+     */
+    private readChromeDrawings;
+    /**
+     * Replant the artwork {@link readChromeDrawings} lifted out of the part being
+     * replaced, re-embedding each image into the NEW part's own relationships and
+     * rewriting its `r:embed` to the id that resolves there.
+     *
+     * The paragraphs are appended, so the artwork keeps its z-order behind the new
+     * text: an anchored `behindDoc` picture paints behind regardless of document
+     * order, and an inline logo reads as trailing content rather than displacing
+     * the text the caller just set.
+     */
+    private carryChromeDrawings;
     /** A generated, always-accurate structural map of the document. */
     describe(): Promise<DocMap>;
     /** The structural map rendered as human-readable Markdown. */
@@ -3318,8 +3409,14 @@ export declare interface SectionInfo {
         bottom: boolean;
         color: string | null;
     } | null;
+    /** Pictures in the effective header part. A full-page decorative frame lives
+     *  here — anchored, `behindDoc`, and usually the part's ONLY content, so a
+     *  section can have artwork while `headerText` is "". */
+    headerDrawings: ChromeDrawing[];
     /** Effective footer text (same inheritance rules). */
     footerText: string | null;
+    /** Pictures in the effective footer part (same inheritance rules). */
+    footerDrawings: ChromeDrawing[];
     /** True when the effective footer part contains a PAGE field. */
     footerHasPageNumbers: boolean;
     /**

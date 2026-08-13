@@ -28,6 +28,7 @@ import {
   type StyledParagraphOptions,
 } from "./core/files/body/OrderedBody";
 import { pixelsToEmu, type InlineImage } from "./core/PartsManagers/MediaManager";
+import { RelManager } from "./core/PartsManagers/RelManager";
 import type { SectionEntry, SectionHeaderFooterRef } from "./core/PartsManagers/SectionManager";
 import type { SectPrPageBorderOptions } from "./core/files/body/sectPr";
 import {
@@ -187,6 +188,65 @@ function mode(nums: number[]): number | null {
   return best;
 }
 
+/** One image lifted out of a header/footer part that is about to be replaced,
+ *  held as BYTES because `r:embed` ids are part-local and do not survive the move. */
+interface CarriedChromeImage {
+  oldRelId: string;
+  bytes: Buffer;
+  ext: string;
+}
+
+/** Artwork rescued from a header/footer part before it is overwritten. */
+interface CarriedChromeDrawings {
+  /** Whole `<w:p>` elements that carry a `<w:drawing>`/`<w:pict>`. */
+  paragraphs: string[];
+  images: CarriedChromeImage[];
+}
+
+/** Word's "Recolor" on a picture: the stored bytes are painted between two
+ *  colours rather than shown as-is. `dark`/`light` are 6-hex when the file names
+ *  a literal colour; `*Scheme` carries a theme slot ("accent4") to resolve
+ *  against theme1.xml. `shade`/`satMod` are fractions (0.45 = 45%). */
+export interface ChromeDuotone {
+  dark: string | null;
+  darkScheme: string | null;
+  light: string | null;
+  lightScheme: string | null;
+  shade: number | null;
+  satMod: number | null;
+}
+
+/** One placed axis of an anchored drawing. `offsetEmu` is signed — decorative
+ *  full-page art is routinely offset NEGATIVELY so it overflows its anchor. */
+export interface ChromeDrawingAxis {
+  /** OOXML frame of reference: "page" | "margin" | "column" | "paragraph" | … */
+  relativeTo: string;
+  offsetEmu: number | null;
+  /** Named alignment ("center", "right") when used instead of an offset. */
+  align: string | null;
+}
+
+/** A picture placed in a header/footer part, with the geometry needed to paint
+ *  it where Word paints it. See {@link extractChromeDrawings}. */
+export interface ChromeDrawing {
+  /** The part-local `r:embed` id — resolution detail, kept for debugging. */
+  embedId: string;
+  /** Media file name inside `word/media` (e.g. "image1.png"), null if unresolved. */
+  image: string | null;
+  extent: { cxEmu: number; cyEmu: number };
+  /** Floating (`wp:anchor`) rather than in the text flow (`wp:inline`). */
+  anchored: boolean;
+  /** Word's "Behind Text" — paints under the body, not over it. */
+  behindDoc: boolean;
+  /** "none" | "square" | "tight" | "through" | "topAndBottom" | "inline" */
+  wrap: string;
+  posH: ChromeDrawingAxis;
+  posV: ChromeDrawingAxis;
+  duotone: ChromeDuotone | null;
+  /** Alt text from `wp:docPr@descr`. */
+  descr: string | null;
+}
+
 /** Extracted content of one header/footer part (internal). */
 interface HeaderFooterContent {
   text: string;
@@ -204,6 +264,8 @@ interface HeaderFooterContent {
    * its switch isn't recognized.
    */
   pageFormat: string | null;
+  /** Pictures placed in the part — the decorative page frames among them. */
+  drawings: ChromeDrawing[];
 }
 
 /**
@@ -342,7 +404,122 @@ function extractHeaderFooterContent(xml: string): HeaderFooterContent {
 
   const segments = extractHeaderSegments(stripped);
   const border = extractHeaderBorder(xml);
-  return { text, segments, border, hasPage, pageFormat };
+  const drawings = extractChromeDrawings(xml);
+  return { text, segments, border, hasPage, pageFormat, drawings };
+}
+
+/** EMU per inch — DrawingML's unit throughout `wp:extent` / `wp:posOffset`. */
+export const EMU_PER_INCH = 914400;
+
+/** Word's built-in Office colour scheme (Office 2013+). A package can omit the
+ *  theme part entirely — Word then paints these, so resolving a `schemeClr`
+ *  against them matches what the user sees rather than giving up. */
+const OFFICE_DEFAULT_THEME_COLORS: Record<string, string> = {
+  dk1: "000000", lt1: "FFFFFF", dk2: "44546A", lt2: "E7E6E6",
+  accent1: "4472C4", accent2: "ED7D31", accent3: "A5A5A5",
+  accent4: "FFC000", accent5: "5B9BD5", accent6: "70AD47",
+  hlink: "0563C1", folHlink: "954F72",
+};
+
+/** `<a:srgbClr val>` / `<a:schemeClr val>` inside `frag` → a raw colour token.
+ *  Scheme names stay symbolic here; {@link Doc.resolveThemeColor} maps them to hex
+ *  once the theme part is available. */
+function firstColorToken(frag: string): { srgb: string | null; scheme: string | null } {
+  const srgb = frag.match(/<a:srgbClr[^>]*\bval="([0-9A-Fa-f]{6})"/)?.[1] ?? null;
+  const scheme = frag.match(/<a:schemeClr[^>]*\bval="([A-Za-z0-9]+)"/)?.[1] ?? null;
+  return { srgb: srgb ? srgb.toUpperCase() : null, scheme };
+}
+
+/**
+ * Every picture in a header/footer part, as geometry a renderer can place.
+ *
+ * A thesis cover frame is one of these: a `<wp:anchor behindDoc="1">` picture,
+ * deliberately larger than the header rectangle and negatively offset, so Word
+ * paints it across the whole page behind the text. Reading only the header's
+ * TEXT (which such a part often has none of) makes the page look empty.
+ *
+ * Offsets and extents stay in EMU — the unit the file uses — so no precision is
+ * lost before the consumer knows its own scale.
+ */
+function extractChromeDrawings(xml: string): ChromeDrawing[] {
+  const out: ChromeDrawing[] = [];
+  // Anchors and inline pictures are the two placements; both wrap the same
+  // <pic:pic>. Matching each frame whole keeps one drawing's geometry from
+  // being read against another's blip.
+  const frames = xml.matchAll(
+    /<wp:(anchor|inline)\b([^>]*)>([\s\S]*?)<\/wp:(?:anchor|inline)>/g,
+  );
+  for (const f of frames) {
+    const kind = f[1] as "anchor" | "inline";
+    const attrs = f[2] ?? "";
+    const body = f[3] ?? "";
+
+    const embedId = body.match(/<a:blip[^>]*\br:embed="([^"]+)"/)?.[1] ?? null;
+    if (!embedId) continue; // a shape/chart, not a picture — nothing to paint
+
+    const cx = Number(body.match(/<wp:extent[^>]*\bcx="(\d+)"/)?.[1] ?? 0);
+    const cy = Number(body.match(/<wp:extent[^>]*\bcy="(\d+)"/)?.[1] ?? 0);
+
+    // Position: an explicit offset, or a named alignment ("center", "right"…).
+    const axis = (name: "positionH" | "positionV") => {
+      const m = body.match(new RegExp(`<wp:${name}[^>]*\\brelativeFrom="([^"]+)"[^>]*>([\\s\\S]*?)</wp:${name}>`));
+      if (!m) return { relativeTo: name === "positionH" ? "column" : "paragraph", offsetEmu: null, align: null };
+      const off = m[2]!.match(/<wp:posOffset>(-?\d+)<\/wp:posOffset>/)?.[1];
+      const align = m[2]!.match(/<wp:align>([a-zA-Z]+)<\/wp:align>/)?.[1] ?? null;
+      return { relativeTo: m[1]!, offsetEmu: off !== undefined ? Number(off) : null, align };
+    };
+
+    // Wrap mode. Inline pictures sit in the text flow and have no wrap element.
+    const wrap =
+      kind === "inline"
+        ? "inline"
+        : (body.match(/<wp:wrap(None|Square|Tight|Through|TopAndBottom)\b/)?.[1] ?? "None")
+            .replace(/^./, (c) => c.toLowerCase());
+
+    // Word's Recolor: the stored bytes are painted in two colours. The thesis
+    // cover frame ships as a BLACK png recoloured to the theme accent — render
+    // the raw bytes and the border comes out black instead of gold.
+    const duo = body.match(/<a:duotone>([\s\S]*?)<\/a:duotone>/)?.[1] ?? null;
+    let duotone: ChromeDuotone | null = null;
+    if (duo) {
+      // Two colour children, in order: shadow colour then highlight colour. Each
+      // is either self-closing or wraps its own modifiers (<a:shade>, <a:satMod>)
+      // — the backreference keeps a modifier's "/>" from ending the element early.
+      const parts = Array.from(
+        duo.matchAll(/<a:(srgbClr|schemeClr|prstClr|sysClr)\b[^>]*(?:\/>|>[\s\S]*?<\/a:\1>)/g),
+      ).map((m) => m[0]);
+      const darkFrag = parts[0] ?? "";
+      const lightFrag = parts[1] ?? "";
+      const dark = firstColorToken(darkFrag);
+      const light = firstColorToken(lightFrag);
+      const num = (frag: string, tag: string) => {
+        const v = frag.match(new RegExp(`<a:${tag}[^>]*\\bval="(\\d+)"`))?.[1];
+        return v === undefined ? null : Number(v) / 100000; // OOXML percentages are ×100000
+      };
+      duotone = {
+        dark: dark.srgb,
+        darkScheme: dark.scheme,
+        light: light.srgb ?? (/<a:prstClr[^>]*val="white"/.test(lightFrag) ? "FFFFFF" : null),
+        lightScheme: light.scheme,
+        shade: num(darkFrag, "shade"),
+        satMod: num(darkFrag, "satMod"),
+      };
+    }
+
+    out.push({
+      embedId,
+      image: null, // resolved against the part's own _rels by the caller
+      extent: { cxEmu: cx, cyEmu: cy },
+      anchored: kind === "anchor",
+      behindDoc: /\bbehindDoc="1"/.test(attrs),
+      wrap,
+      posH: axis("positionH"),
+      posV: axis("positionV"),
+      duotone,
+      descr: body.match(/<wp:docPr[^>]*\bdescr="([^"]*)"/)?.[1] ?? null,
+    });
+  }
+  return out;
 }
 
 /** Options accepted by paragraph/heading verbs. */
@@ -457,8 +634,14 @@ export interface SectionInfo {
   /** The effective header paragraph's bottom rule (Word's header line): `bottom`
    *  true when present + its 6-hex `color`. null when there's no header. */
   headerBorder: { bottom: boolean; color: string | null } | null;
+  /** Pictures in the effective header part. A full-page decorative frame lives
+   *  here — anchored, `behindDoc`, and usually the part's ONLY content, so a
+   *  section can have artwork while `headerText` is "". */
+  headerDrawings: ChromeDrawing[];
   /** Effective footer text (same inheritance rules). */
   footerText: string | null;
+  /** Pictures in the effective footer part (same inheritance rules). */
+  footerDrawings: ChromeDrawing[];
   /** True when the effective footer part contains a PAGE field. */
   footerHasPageNumbers: boolean;
   /**
@@ -502,6 +685,9 @@ export interface DocMap {
 export class Doc {
   /** Escape hatch: the underlying engine + all its managers. */
   readonly engine: Mdocxengine;
+
+  /** theme1.xml's colour scheme, parsed once per Doc (slot → 6-hex). */
+  private themeColors: Map<string, string> | null = null;
 
   private constructor(engine: Mdocxengine) {
     this.engine = engine;
@@ -1210,7 +1396,11 @@ export class Doc {
   async setSectionHeader(blockIndex: number, text: string): Promise<SectionEditResult> {
     const { sections, sectionIndex } = await this.resolveSection(blockIndex);
     const oldRelId = sections[sectionIndex]?.headerRefs?.find((h) => h.type === "default")?.relId;
-    const { relId } = await this.engine.header.addHeader((text ?? "").trim(), "default", undefined, { registerInSectPr: false });
+    // The old part's artwork must be READ before the new part replaces it — the
+    // cleanup at the end of this method deletes the file it lives in.
+    const carried = await this.readChromeDrawings(oldRelId);
+    const { headerPath, relId } = await this.engine.header.addHeader((text ?? "").trim(), "default", undefined, { registerInSectPr: false });
+    await this.carryChromeDrawings("header", headerPath, carried);
     await this.engine.sections.setSectionHeader(sectionIndex, relId, "default");
     if (oldRelId && oldRelId !== relId) await this.removeHeaderFooterByRel("header", oldRelId);
     return { sectionIndex, totalSections: sections.length };
@@ -1223,7 +1413,9 @@ export class Doc {
   async setSectionFooter(blockIndex: number, opts: FooterOptions = {}): Promise<SectionEditResult> {
     const { sections, sectionIndex } = await this.resolveSection(blockIndex);
     const oldRelId = sections[sectionIndex]?.footerRefs?.find((f) => f.type === "default")?.relId;
+    const carried = await this.readChromeDrawings(oldRelId);
     const { footerPath, relId } = await this.engine.footer.addFooter((opts.text ?? "").trim(), "default", undefined, { registerInSectPr: false });
+    await this.carryChromeDrawings("footer", footerPath, carried);
     if (opts.pageNumbers) {
       await this.engine.footer.insertPageNumber(footerPath, {
         alignment: opts.alignment ?? "center",
@@ -1379,7 +1571,9 @@ export class Doc {
         headerText: header ? header.text : null,
         headerSegments: header ? header.segments : null,
         headerBorder: header ? header.border : null,
+        headerDrawings: header ? header.drawings : [],
         footerText: footer ? footer.text : null,
+        footerDrawings: footer ? footer.drawings : [],
         footerHasPageNumbers: !!footer?.hasPage,
         // Explicit pgNumType wins; else the format the effective footer's PAGE
         // field renders with (it travels with the inherited part).
@@ -1411,13 +1605,75 @@ export class Doc {
       if (target) {
         const path = target.startsWith("word/") ? target : `word/${target.replace(/^\/+/, "")}`;
         const xml = this.engine.zip.readAsText(path);
-        if (xml) content = extractHeaderFooterContent(xml);
+        if (xml) {
+          content = extractHeaderFooterContent(xml);
+          // `r:embed` resolves against the PART's own rels, not the document's,
+          // and a scheme colour only means something against the theme — both
+          // need the engine, so they are filled in here rather than in the
+          // pure extractor.
+          if (content.drawings.length) await this.resolveChromeDrawings(path, content.drawings);
+        }
       }
     } catch {
       content = null;
     }
     cache.set(ref.relId, content);
     return content;
+  }
+
+  /**
+   * Fill in what {@link extractChromeDrawings} could not know from the part XML
+   * alone: which media file each `r:embed` points at (resolved against the
+   * part's OWN `_rels`), and the hex behind any theme-slot recolour.
+   *
+   * Mutates in place — the drawings were just built for this content object and
+   * have no other reader yet.
+   */
+  private async resolveChromeDrawings(partPath: string, drawings: ChromeDrawing[]): Promise<void> {
+    const partName = partPath.replace(/^word\//, "");
+    const rels = new RelManager(this.engine.zip, `word/_rels/${partName}.rels`);
+    for (const d of drawings) {
+      const target = await rels.getTarget(d.embedId).catch(() => null);
+      if (target) d.image = target.replace(/^.*\//, "");
+      if (d.duotone) {
+        if (!d.duotone.dark && d.duotone.darkScheme) {
+          d.duotone.dark = await this.resolveThemeColor(d.duotone.darkScheme);
+        }
+        if (!d.duotone.light && d.duotone.lightScheme) {
+          d.duotone.light = await this.resolveThemeColor(d.duotone.lightScheme);
+        }
+      }
+    }
+  }
+
+  /** Theme slot ("accent4", "dk1"…) → 6-hex from theme1.xml's `<a:clrScheme>`.
+   *  `<a:sysClr>` carries the resolved value in `lastClr`. Slots the document
+   *  does not define fall back to Word's built-in Office palette, which is what
+   *  Word itself paints for a package with no theme part. null when the slot is
+   *  not a colour-scheme name at all. */
+  private async resolveThemeColor(slot: string): Promise<string | null> {
+    if (!this.themeColors) {
+      const map = new Map<string, string>(Object.entries(OFFICE_DEFAULT_THEME_COLORS));
+      try {
+        const xml = this.engine.zip.readAsText("word/theme/theme1.xml") ?? "";
+        const scheme = xml.match(/<a:clrScheme[\s\S]*?<\/a:clrScheme>/)?.[0] ?? "";
+        for (const m of scheme.matchAll(
+          /<a:(\w+)>\s*<a:(?:srgbClr\s+val="([0-9A-Fa-f]{6})"|sysClr[^>]*lastClr="([0-9A-Fa-f]{6})")/g,
+        )) {
+          const hex = (m[2] ?? m[3])!.toUpperCase();
+          map.set(m[1]!, hex);
+        }
+      } catch {
+        // Unreadable theme — the Office defaults above still stand in.
+      }
+      // Word's document-level aliases for the first two pairs.
+      if (map.has("dk1")) map.set("tx1", map.get("dk1")!);
+      if (map.has("lt1")) map.set("bg1", map.get("lt1")!);
+      if (map.has("dk2")) map.set("tx2", map.get("dk2")!);
+      if (map.has("lt2")) map.set("bg2", map.get("lt2")!);
+      this.themeColors = map;
+    }
+    return this.themeColors.get(slot) ?? null;
   }
 
   /** Best-effort delete of a header/footer part by its relationship id (cleanup). */
@@ -1427,6 +1683,96 @@ export class Doc {
     const path = target.startsWith("word/") ? target : `word/${target.replace(/^\/+/, "")}`;
     if (which === "header") await this.engine.header.removeHeader(path).catch(() => {});
     else await this.engine.footer.removeFooter(path).catch(() => {});
+  }
+
+  /**
+   * Read the artwork-bearing paragraphs out of the header/footer part behind
+   * `relId`, together with the bytes each one's images resolve to.
+   *
+   * Setting a section's header/footer text builds a BRAND-NEW part and deletes
+   * the old one — which silently destroyed full-page decorative frames, the
+   * near-universal shape of an Algerian thesis cover (a `<wp:anchor behindDoc>`
+   * picture living in the header, drawn behind the whole page). The student's
+   * only clue was the border vanishing. So the artwork is lifted out first and
+   * replanted by {@link carryChromeDrawings} into the replacement part.
+   *
+   * Images are carried as BYTES, not relationship ids: `r:embed` resolves against
+   * the part's own `_rels`, so an id from the old part means nothing in the new
+   * one and would leave Word showing a repair prompt.
+   */
+  private async readChromeDrawings(relId: string | undefined): Promise<CarriedChromeDrawings> {
+    const empty: CarriedChromeDrawings = { paragraphs: [], images: [] };
+    if (!relId) return empty;
+    try {
+      const target = await this.engine.rels.getTarget(relId);
+      if (!target) return empty;
+      const path = target.startsWith("word/") ? target : `word/${target.replace(/^\/+/, "")}`;
+      const xml = this.engine.zip.readAsText(path);
+      if (!xml) return empty;
+
+      // Only whole paragraphs that carry a drawing — a run holding an anchor is
+      // meaningless outside the paragraph Word anchors it to.
+      const paragraphs = (xml.match(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g) ?? []).filter((p) =>
+        /<w:drawing\b|<w:pict\b/.test(p),
+      );
+      if (paragraphs.length === 0) return empty;
+
+      // Resolve every image the carried paragraphs reference against the OLD
+      // part's own rels, keeping the bytes so they can be re-embedded.
+      const partName = path.replace(/^word\//, "");
+      const rels = new RelManager(this.engine.zip, `word/_rels/${partName}.rels`);
+      const ids = new Set(
+        paragraphs.flatMap((p) => Array.from(p.matchAll(/r:embed="([^"]+)"/g)).map((m) => m[1]!)),
+      );
+      const images: CarriedChromeImage[] = [];
+      for (const id of ids) {
+        const mediaTarget = await rels.getTarget(id).catch(() => null);
+        if (!mediaTarget) continue;
+        const name = mediaTarget.replace(/^.*\//, "");
+        const bytes = this.engine.media.extractImage(name);
+        if (!bytes) continue;
+        images.push({ oldRelId: id, bytes, ext: name.replace(/^.*\./, "") || "png" });
+      }
+      return { paragraphs, images };
+    } catch {
+      // Preservation is best-effort: a part we cannot read must not fail the edit.
+      return empty;
+    }
+  }
+
+  /**
+   * Replant the artwork {@link readChromeDrawings} lifted out of the part being
+   * replaced, re-embedding each image into the NEW part's own relationships and
+   * rewriting its `r:embed` to the id that resolves there.
+   *
+   * The paragraphs are appended, so the artwork keeps its z-order behind the new
+   * text: an anchored `behindDoc` picture paints behind regardless of document
+   * order, and an inline logo reads as trailing content rather than displacing
+   * the text the caller just set.
+   */
+  private async carryChromeDrawings(
+    which: "header" | "footer",
+    partPath: string,
+    carried: CarriedChromeDrawings,
+  ): Promise<void> {
+    if (carried.paragraphs.length === 0) return;
+    try {
+      const xml = this.engine.zip.readAsText(partPath);
+      if (!xml) return;
+      let block = carried.paragraphs.join("");
+      for (const img of carried.images) {
+        const rid = await this.engine.media.addImageToPartRels(partPath, img.bytes, img.ext);
+        block = block.split(`r:embed="${img.oldRelId}"`).join(`r:embed="${rid}"`);
+      }
+      const close = which === "header" ? "</w:hdr>" : "</w:ftr>";
+      const at = xml.lastIndexOf(close);
+      if (at === -1) return;
+      const merged = xml.slice(0, at) + block + xml.slice(at);
+      if (which === "header") this.engine.header.updateHeader(partPath, merged);
+      else this.engine.footer.updateFooter(partPath, merged);
+    } catch {
+      // Same contract as the read half — never fail the caller's edit.
+    }
   }
 
   // ─── Describe (generated map) ────────────────────────────────────────────────

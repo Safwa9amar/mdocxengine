@@ -327,6 +327,9 @@ export type {
   SectionEditResult,
   SectionInfo,
   SectionPageGeometry,
+  ChromeDrawing,
+  ChromeDrawingAxis,
+  ChromeDuotone,
 } from "./Doc";
 export type { BodyBlock, BlockKind } from "./core/files/body/OrderedBody";
 export type { StyleEntry } from "./core/PartsManagers/StylesManager";
