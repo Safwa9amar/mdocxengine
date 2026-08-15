@@ -27,6 +27,7 @@ export interface ParagraphOptions {
   rtl?: boolean;
 }
 import { extractParaIds } from "@/helpers";
+import { toHalfPoints } from "@/core/ooxml/hps";
 import { parseXml } from "@/utils/xmlUtils";
 import AdmZip from "adm-zip";
 import { Builder } from "xml2js";
@@ -422,7 +423,7 @@ class Paragraph {
       const run = Run.fromText(text);
       if (opts.bold) run.setBold();
       if (opts.italic) run.setItalic();
-      if (opts.fontSizePt) run.setFontSize(opts.fontSizePt * 2);
+      if (opts.fontSizePt) run.setFontSize(toHalfPoints(opts.fontSizePt, "Paragraph.make fontSizePt"));
       if (opts.fontFamily) run.setFontFamily(opts.fontFamily, opts.fontFamily);
       if (opts.color) run.setColor(opts.color);
       if (opts.rtl) run.setRtl();

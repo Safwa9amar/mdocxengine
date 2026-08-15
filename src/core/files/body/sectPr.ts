@@ -11,6 +11,7 @@
  * OrderedBody block path gives).
  */
 import { splitDocument, assembleDocument } from "./OrderedBody";
+import { insertAfterParagraphOpen } from "@/core/ooxml/paragraphProps";
 
 export type SectPrRefKind = "header" | "footer";
 
@@ -191,12 +192,19 @@ export function upsertSectPrPageBorders(sectPrXml: string, opts: SectPrPageBorde
 
 // ─── Paragraph <w:pPr><w:sectPr> edits ───────────────────────────────────────
 
-/** Insert/replace the `<w:sectPr>` child of a paragraph's `<w:pPr>` (creating pPr). */
+/** Insert/replace the `<w:sectPr>` child of a paragraph's `<w:pPr>` (creating pPr).
+ *
+ *  A section break is very often applied to an EMPTY paragraph — the blank line
+ *  that ends a front-matter page — and Word writes an empty paragraph
+ *  self-closing (`<w:p w:rsidR="00A1"/>`). Splicing the new `<w:pPr>` in by hand
+ *  after the first `>` put it after a tag that had already closed, so the
+ *  section break landed as a bare `<w:pPr>` DIRECT CHILD of `<w:body>`: Word
+ *  refuses the document and the app draws an unknown-block chip where the page
+ *  break should be. `insertAfterParagraphOpen` normalises `<w:p/>` first. */
 export function upsertParagraphSectPr(paraXml: string, sectPrXml: string): string {
   const pPrIdx = paraXml.indexOf("<w:pPr");
   if (pPrIdx === -1) {
-    const pOpenEnd = paraXml.indexOf(">") + 1;
-    return paraXml.slice(0, pOpenEnd) + `<w:pPr>${sectPrXml}</w:pPr>` + paraXml.slice(pOpenEnd);
+    return insertAfterParagraphOpen(paraXml, `<w:pPr>${sectPrXml}</w:pPr>`);
   }
   const pPrOpenEnd = paraXml.indexOf(">", pPrIdx) + 1;
   if (paraXml[pPrOpenEnd - 2] === "/") {

@@ -241,6 +241,13 @@ export class Run {
    * @param halfPoints Size in half-points (e.g. 24 = 12pt, 28 = 14pt).
    */
   public setFontSize(halfPoints: number): void {
+    // ST_HpsMeasure is an unsigned WHOLE number: a fraction here is invalid
+    // OOXML that Word paints as text too small to read rather than refusing.
+    if (!Number.isInteger(halfPoints) || halfPoints < 1) {
+      throw new Error(
+        `Run.setFontSize: halfPoints must be a whole number of half-points >= 1 (24 = 12pt), got ${halfPoints}`,
+      );
+    }
     const props = this.ensureProperties();
     (props as any)["w:sz"] = { $: { "w:val": String(halfPoints) } };
     (props as any)["w:szCs"] = { $: { "w:val": String(halfPoints) } };

@@ -415,6 +415,7 @@ export {
   type TextStyleInspection,
 } from "./core/PartsManagers/TextStyleReader";
 export { type RunProps, mergeRunProps } from "./core/ooxml/runProps";
+export { toHalfPoints, MIN_FONT_SIZE_PT, MAX_FONT_SIZE_PT } from "./core/ooxml/hps";
 // Single-paragraph OOXML surgery: Word's pagination properties (keep with next,
 // keep lines together, widow/orphan control, page break before) and DIRECT run
 // formatting for ONE paragraph — what "make THIS heading 48pt" needs, where a
@@ -422,6 +423,7 @@ export { type RunProps, mergeRunProps } from "./core/ooxml/runProps";
 export {
   applyParagraphPagination,
   applyRunPropsToParagraph,
+  insertAfterParagraphOpen,
   isParagraphXml,
   readParagraphPagination,
   readParagraphProps,
@@ -430,6 +432,18 @@ export {
   type ParagraphRunStyleResult,
 } from "./core/ooxml/paragraphProps";
 export { CT_PPR_ORDER, canonicalizeParagraphProps } from "./core/ooxml/canonicalOrder";
+// Picture PLACEMENT: where a <w:drawing> sits on the page. Vertical position is
+// not a property but a CONTAINER — an in-flow `wp:inline` picture has to become
+// a floating `wp:anchor` before "centre it on the page" can even be expressed.
+export {
+  applyDrawingLayout,
+  readDrawingLayout,
+  type DrawingLayout,
+  type DrawingLayoutResult,
+  type DrawingPlacement,
+  type DrawingRelativeTo,
+  type DrawingWrap,
+} from "./core/ooxml/drawingLayout";
 export {
   applyStyleRunPropsToXml,
   buildParagraphStyleXml,

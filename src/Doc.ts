@@ -39,6 +39,7 @@ import {
 } from "./core/PartsManagers/TextStyleManager";
 import { TextStyleReader, type TextStyleInspection } from "./core/PartsManagers/TextStyleReader";
 import type { RunProps } from "./core/ooxml/runProps";
+import { toHalfPoints } from "./core/ooxml/hps";
 
 const APPEND = Number.MAX_SAFE_INTEGER;
 
@@ -1107,7 +1108,7 @@ export class Doc {
           t.setCellTextFormat(row, c, {
             bold: opts.bold,
             italic: opts.italic,
-            sizeHalfPoints: opts.sizePt != null ? Math.round(opts.sizePt * 2) : undefined,
+            sizeHalfPoints: opts.sizePt != null ? toHalfPoints(opts.sizePt, "setTableCellFormat sizePt") : undefined,
             fontFamily: opts.fontFamily,
           });
         }

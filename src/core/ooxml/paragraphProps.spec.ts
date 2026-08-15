@@ -2,6 +2,7 @@ import { describe, test, expect } from "vitest";
 import {
   applyParagraphPagination,
   applyRunPropsToParagraph,
+  insertAfterParagraphOpen,
   isParagraphXml,
   readParagraphPagination,
   readParagraphProps,
@@ -179,5 +180,35 @@ describe("applyRunPropsToParagraph", () => {
 
   test("throws on a non-paragraph", () => {
     expect(() => applyRunPropsToParagraph(`<w:tbl/>`, { bold: true })).toThrow(/not a <w:p>/);
+  });
+});
+
+describe("insertAfterParagraphOpen", () => {
+  // The shared primitive behind every "put a <w:pPr> at the head of this
+  // paragraph" writer in the engine and the server. Hand-rolled
+  // `xml.replace(/<w:p\b[^>]*>/, …)` versions of this all shipped the same
+  // defect: `[^>]*` eats the slash of a self-closing <w:p/>, so the fragment
+  // landed as the paragraph's SIBLING — a body-level element Word won't open.
+  test("splices INSIDE a self-closing paragraph, normalising it to paired form", () => {
+    expect(insertAfterParagraphOpen('<w:p w:rsidR="00A1"/>', "<w:pPr><w:bidi/></w:pPr>")).toBe(
+      '<w:p w:rsidR="00A1"><w:pPr><w:bidi/></w:pPr></w:p>',
+    );
+  });
+
+  test("splices INSIDE an ordinary paired paragraph", () => {
+    expect(insertAfterParagraphOpen("<w:p><w:r><w:t>x</w:t></w:r></w:p>", "<w:pPr><w:bidi/></w:pPr>")).toBe(
+      "<w:p><w:pPr><w:bidi/></w:pPr><w:r><w:t>x</w:t></w:r></w:p>",
+    );
+  });
+
+  test("anchors on the OUTER paragraph, never one nested in a text box", () => {
+    const outer = "<w:p><w:r><w:pict><w:txbxContent><w:p><w:r/></w:p></w:txbxContent></w:pict></w:r></w:p>";
+    const out = insertAfterParagraphOpen(outer, "<w:pPr><w:bidi/></w:pPr>");
+    expect(out.startsWith("<w:p><w:pPr><w:bidi/></w:pPr><w:r><w:pict>")).toBe(true);
+  });
+
+  test("leaves a non-paragraph, and an empty fragment, untouched", () => {
+    expect(insertAfterParagraphOpen("<w:tbl/>", "<w:pPr/>")).toBe("<w:tbl/>");
+    expect(insertAfterParagraphOpen("<w:p/>", "")).toBe("<w:p/>");
   });
 });

@@ -30,6 +30,7 @@
 
 import * as XmlUtils from "@/utils/xmlUtils";
 import { Table } from "@/core/files/table/index";
+import { toHalfPoints } from "@/core/ooxml/hps";
 
 const W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 
@@ -449,7 +450,7 @@ export function makeStyledParagraphXml(text: string, opts: StyledParagraphOption
   if (opts.bold) rPrParts.push(`<w:b/>`);
   if (opts.italic) rPrParts.push(`<w:i/>`);
   if (opts.fontSizePt) {
-    const hp = opts.fontSizePt * 2;
+    const hp = toHalfPoints(opts.fontSizePt, "makeStyledParagraphXml fontSizePt");
     rPrParts.push(`<w:sz w:val="${hp}"/><w:szCs w:val="${hp}"/>`);
   }
   if (opts.color) rPrParts.push(`<w:color w:val="${escapeXmlText(opts.color.replace("#", ""))}"/>`);

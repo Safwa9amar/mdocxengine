@@ -490,6 +490,44 @@ describe("docx-doctor: a run loose in the body", () => {
     expect(findRule(zip, "body.illegal-child")).toMatchObject({ severity: "fatal", fixable: false });
   });
 
+  // The same defect one layer up: a writer spliced paragraph PROPERTIES in after
+  // a self-closing <w:p/>, so they landed beside the paragraph. Reported as an
+  // unknown-block chip in the app, sitting exactly where a page break belonged.
+  describe("an orphaned <w:pPr> in the body", () => {
+    const ORPHAN = '<w:pPr><w:sectPr><w:type w:val="nextPage"/></w:sectPr></w:pPr>';
+
+    it("flags it fatal, and as fixable", () => {
+      const zip = pkg(`${P()}<w:p w:rsidR="00A1"/>${ORPHAN}${SECT}`);
+      expect(findRule(zip, "body.orphaned-ppr")).toMatchObject({ severity: "fatal", count: 1, fixable: true });
+    });
+
+    it("merges it back into the paragraph before it, keeping the section break", () => {
+      const zip = pkg(`${P()}<w:p w:rsidR="00A1"/>${ORPHAN}${SECT}`);
+      inspectDocx(zip, { fix: true });
+      const xml = zip.readAsText("word/document.xml");
+      // Inside the paragraph now — and the empty <w:p/> is paired so it can hold it.
+      expect(xml).toContain('<w:p w:rsidR="00A1"><w:pPr><w:sectPr><w:type w:val="nextPage"/></w:sectPr></w:pPr></w:p>');
+      expect(xml).not.toContain("/><w:pPr>");
+      expect(rulesOf(zip)).not.toContain("body.orphaned-ppr");
+      expect(rulesOf(zip)).not.toContain("body.illegal-child");
+    });
+
+    it("merges into a paragraph that already has properties, in CT_PPr order", () => {
+      const zip = pkg(`<w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:t>x</w:t></w:r></w:p>${ORPHAN}${SECT}`);
+      inspectDocx(zip, { fix: true });
+      const xml = zip.readAsText("word/document.xml");
+      // w:jc precedes w:sectPr in CT_PPr, and both are inside the one pPr.
+      expect(xml).toContain('<w:pPr><w:jc w:val="center"/><w:sectPr><w:type w:val="nextPage"/></w:sectPr></w:pPr>');
+      expect(rulesOf(zip)).not.toContain("body.orphaned-ppr");
+    });
+
+    it("leaves one with no paragraph before it to the unfixable rule", () => {
+      const zip = pkg(`${ORPHAN}${P()}${SECT}`);
+      expect(rulesOf(zip)).not.toContain("body.orphaned-ppr");
+      expect(findRule(zip, "body.illegal-child")).toMatchObject({ severity: "fatal", fixable: false });
+    });
+  });
+
   it("leaves the legal block-level elements alone", () => {
     const zip = pkg(`<w:bookmarkStart w:id="1" w:name="a"/>${P()}<w:bookmarkEnd w:id="1"/>${TBL()}${P()}${SECT}`);
     expect(rulesOf(zip)).not.toContain("body.stray-run");

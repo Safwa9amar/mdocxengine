@@ -76,6 +76,32 @@ export function isParagraphXml(xml: string): boolean {
   return P_OPEN_RE.test(xml);
 }
 
+/**
+ * Splice `fragment` in immediately after a paragraph's OPENING TAG.
+ *
+ * Use this — never a hand-rolled `xml.replace(/<w:p\b[^>]*>/, …)` — whenever
+ * anything is inserted at the head of a paragraph. `[^>]*` swallows the slash of
+ * a SELF-CLOSING `<w:p w:rsidR="00A1"/>`, which is exactly what Word writes for
+ * an empty paragraph, so the naive replace appends after a tag that has ALREADY
+ * CLOSED: the fragment lands as the paragraph's SIBLING — a direct child of
+ * `<w:body>`. A body holding a bare `<w:pPr>` is not openable in Word
+ * (`body.illegal-child`, fatal), and the app draws it as an unknown-block chip.
+ * {@link splitParagraph} normalises `<w:p/>` to paired form first, so the
+ * fragment always lands INSIDE the paragraph.
+ *
+ * Anchored to the opening tag, so a paragraph nested in a text box
+ * (`w:txbxContent`) can never be the one that gets written to.
+ *
+ * Returns `xml` unchanged when it does not begin with a `<w:p>` element, or when
+ * `fragment` is empty.
+ */
+export function insertAfterParagraphOpen(xml: string, fragment: string): string {
+  if (!fragment) return xml;
+  const split = splitParagraph(xml);
+  if (!split) return xml;
+  return `${split.head}${fragment}${split.rest}`;
+}
+
 /** Match a leading `<w:pPr>` — self-closing or paired — at the start of a fragment. */
 const LEADING_PPR_RE = /^(\s*)<w:pPr(?:\s*\/>|(?:\s[^>]*?)?>([\s\S]*?)<\/w:pPr>)/;
 

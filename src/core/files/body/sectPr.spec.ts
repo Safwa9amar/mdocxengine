@@ -78,6 +78,25 @@ describe("sectPr string helpers", () => {
     expect(out).toBe('<w:p><w:pPr><w:jc w:val="center"/><w:sectPr/></w:pPr><w:r/></w:p>');
   });
 
+  // A section break is usually applied to the blank line that ends a page, and
+  // Word writes an empty paragraph SELF-CLOSING. Splicing after the first `>`
+  // put the pPr after a tag that had already closed, so the break landed as a
+  // bare <w:pPr> child of <w:body>: Word refuses the file and the app drew an
+  // unknown-block chip where the page break belonged.
+  test("upsertParagraphSectPr puts the sectPr INSIDE a self-closing <w:p/>", () => {
+    const out = upsertParagraphSectPr('<w:p w:rsidR="00A1" w:rsidRDefault="00A1"/>', '<w:sectPr><w:type w:val="nextPage"/></w:sectPr>');
+    expect(out).toBe(
+      '<w:p w:rsidR="00A1" w:rsidRDefault="00A1"><w:pPr><w:sectPr><w:type w:val="nextPage"/></w:sectPr></w:pPr></w:p>',
+    );
+    // The regression itself: nothing may follow the paragraph's close tag.
+    expect(out.endsWith("</w:p>")).toBe(true);
+    expect(out).not.toContain("/><w:pPr>");
+  });
+
+  test("upsertParagraphSectPr handles the bare self-closing <w:p/>", () => {
+    expect(upsertParagraphSectPr("<w:p/>", "<w:sectPr/>")).toBe("<w:p><w:pPr><w:sectPr/></w:pPr></w:p>");
+  });
+
   test("removeParagraphSectPr strips the sectPr only", () => {
     const out = removeParagraphSectPr('<w:p><w:pPr><w:jc w:val="left"/><w:sectPr><w:type w:val="nextPage"/></w:sectPr></w:pPr></w:p>');
     expect(out).toBe('<w:p><w:pPr><w:jc w:val="left"/></w:pPr></w:p>');

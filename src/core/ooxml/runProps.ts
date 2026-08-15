@@ -1,4 +1,5 @@
 import { canonicalizeRunProps } from "./canonicalOrder";
+import { toHalfPoints } from "./hps";
 
 /**
  * The run-level properties `set_text_style` can apply. Every field is optional;
@@ -97,16 +98,12 @@ export function mergeRunProps(rPrInner: string, props: RunProps): string {
     added.push(buildRFonts(props.font, existingRFonts));
   }
   if (props.sizePt !== undefined) {
-    // w:sz/w:szCs are ST_HpsMeasure (unsigned half-points) - a negative,
-    // zero, NaN or Infinite value would be schema-invalid OOXML that Word
-    // refuses to open. Fail loudly rather than writing it.
-    if (!Number.isFinite(props.sizePt) || props.sizePt <= 0) {
-      throw new Error(
-        `runProps.mergeRunProps: sizePt must be a finite number of points greater than 0, got ${props.sizePt}`,
-      );
-    }
+    // w:sz/w:szCs are ST_HpsMeasure (unsigned WHOLE half-points) - a negative,
+    // zero, fractional, NaN or Infinite value is schema-invalid OOXML, and a
+    // fraction of a point is text Word paints too small to see. Fail loudly
+    // rather than writing it.
+    const halfPoints = toHalfPoints(props.sizePt, "runProps.mergeRunProps sizePt");
     body = stripRunPropTags(body, RUN_PROP_TAGS.sizePt);
-    const halfPoints = Math.round(props.sizePt * 2);
     added.push(`<w:sz w:val="${halfPoints}"/><w:szCs w:val="${halfPoints}"/>`);
   }
   if (props.bold !== undefined) {

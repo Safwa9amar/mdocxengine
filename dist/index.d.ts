@@ -12,6 +12,44 @@ export declare interface AppendOptions {
 export declare function applyBodyPageLayout(documentXml: string, opts: BodyPageLayoutOpts): string;
 
 /**
+ * Place the first picture in a paragraph, converting its container as needed.
+ *
+ * - Asking for a `vertical` position (or `float: true`) FLOATS an inline
+ *   picture: `wp:inline` → `wp:anchor` with both axes written as named
+ *   alignments relative to `relativeTo` (default `page`). This is the only way
+ *   "centre it on the page" can be expressed in OOXML.
+ * - `float: false` returns a floating picture to the text flow — the positioning
+ *   children are dropped and the container becomes `wp:inline` again.
+ * - Passing ONLY `horizontal` on an inline picture changes nothing here: it is
+ *   the carrier PARAGRAPH's `w:jc` that moves an in-flow picture sideways, and
+ *   floating a picture just to nudge it left would change how text flows around
+ *   it. The caller handles that case (`changed: false` with `floating: false`
+ *   is the signal). On an already-floating picture, `horizontal` IS applied.
+ *
+ * Everything outside the container's geometry prefix — the whole `a:graphic`
+ * subtree, so the image itself, its crop, its effects — is copied byte for byte.
+ *
+ * ON `mc:AlternateContent`. A great many real pictures ship as a pair: an
+ * `mc:Choice` holding the modern DrawingML, and an `mc:Fallback` holding a VML
+ * twin of the same picture for readers older than Word 2007. This function used
+ * to refuse the whole paragraph on sight of one, on the theory that rewriting a
+ * single branch leaves the file inconsistent. That was the wrong trade, and a
+ * student's بسم الله page proved it within the hour: the tool refused, the
+ * assistant reported the capability as missing, and the student got nothing —
+ * over a compatibility branch that no Word since 2007 has read.
+ *
+ * So: the `mc:Choice` drawing IS the picture, and it is repositioned. The
+ * `mc:Fallback` twin is left exactly as it was — Word never renders it, our own
+ * reader already discards it (`stripAltContentFallback`), and rewriting VML
+ * geometry is a second, unrelated language. `legacyTwin` reports that it is
+ * there. Only a drawing found INSIDE the fallback is refused, because moving the
+ * copy nobody renders would look, to the student, like nothing happened.
+ *
+ * @throws {Error} when `xml` holds no drawing this can move.
+ */
+export declare function applyDrawingLayout(xml: string, opts: DrawingLayout): DrawingLayoutResult;
+
+/**
  * Apply pagination toggles to one paragraph's XML.
  *
  * `true` writes the bare element (`<w:keepNext/>`); `false` writes an EXPLICIT
@@ -1324,6 +1362,91 @@ declare interface Drawing {
     };
 }
 
+/** Where a floating picture sits. `undefined` = leave that axis alone. */
+export declare interface DrawingLayout {
+    horizontal?: "left" | "center" | "right";
+    vertical?: "top" | "center" | "bottom";
+    /** Frame of reference for BOTH axes. Default `page`. */
+    relativeTo?: DrawingRelativeTo;
+    /**
+     * Default `topAndBottom`, not Word's own `square`. A thesis figure is close to
+     * the full column width, and square wrapping round one leaves a two-word
+     * sliver of text down its side; top-and-bottom reserves the band the picture
+     * occupies and never does. On the page this default was built for — a lone
+     * picture centred on an otherwise empty page — the two are identical.
+     */
+    wrap?: DrawingWrap;
+    /** `false` returns the picture to the text flow (anchor → inline). */
+    float?: boolean;
+}
+
+export declare interface DrawingLayoutResult {
+    xml: string;
+    changed: boolean;
+    placement: DrawingPlacement;
+    /** The drawing ships with an `mc:Fallback` VML twin that was left untouched —
+     *  see {@link applyDrawingLayout}. Informational; nothing needs to act on it. */
+    legacyTwin: boolean;
+}
+
+/** What a drawing's placement currently is. */
+export declare interface DrawingPlacement {
+    /** `wp:anchor` rather than `wp:inline`. */
+    floating: boolean;
+    horizontal: {
+        relativeTo: string;
+        align: string | null;
+        offsetEmu: number | null;
+    } | null;
+    vertical: {
+        relativeTo: string;
+        align: string | null;
+        offsetEmu: number | null;
+    } | null;
+    wrap: DrawingWrap | "tight" | "through" | "inline";
+    /** Painted behind the text (Word's "Send Behind Text"). */
+    behindDoc: boolean;
+    widthEmu: number;
+    heightEmu: number;
+}
+
+/**
+ * Picture PLACEMENT surgery: where a `<w:drawing>` sits on the page.
+ *
+ * Word stores a picture in one of two containers, and which one it is decides
+ * everything about where it can go:
+ *
+ *  - `<wp:inline>` — the picture IS a character in the text flow. It can only be
+ *    where the line is; "put it in the middle of the page" is not expressible.
+ *  - `<wp:anchor>` — the picture FLOATS, with a `wp:positionH`/`wp:positionV`
+ *    pair naming a frame of reference (`page`, `margin`, …) and either an offset
+ *    or a named alignment. This is Word's Layout ▸ Position dialog, and
+ *    "Position in Middle Center relative to Page" is exactly
+ *    `<wp:align>center</wp:align>` on both axes relative to `page`.
+ *
+ * So vertical placement is not a property you can set on a picture — it is a
+ * container conversion. That is what {@link applyDrawingLayout} does, in both
+ * directions, copying every other byte of the drawing through untouched (the
+ * `a:graphic` subtree, which holds the image reference, is never even read).
+ *
+ * TWO RULES the schema enforces, both of which would produce a file Word refuses
+ * to open if broken:
+ *
+ *  1. `CT_Anchor` is an ORDERED sequence — simplePos, positionH, positionV,
+ *     extent, effectExtent?, <wrap>, docPr, cNvGraphicFramePr?, graphic. The
+ *     wrap element in particular goes immediately BEFORE `wp:docPr`, not at the
+ *     end where appending would put it.
+ *  2. Geometry is read and written on the PREFIX before `<a:graphic` only. A
+ *     shape's text box can contain a whole nested drawing, so a free search for
+ *     `wp:positionV` can find a child's and move the wrong picture.
+ */
+/** Frames of reference this module will write. Word accepts more; these are the
+ *  two that mean anything to a student ("on the page" / "inside the margins"). */
+export declare type DrawingRelativeTo = "page" | "margin";
+
+/** Text wrapping around a floating picture, in Word's UI vocabulary. */
+export declare type DrawingWrap = "none" | "square" | "topAndBottom";
+
 /**
  * Every outermost `<w:p>…</w:p>` inside a block's XML, in document order. A
  * `tables` target block is a whole `<w:tbl>` — its cell paragraphs are nested
@@ -1856,6 +1979,27 @@ export declare interface InlineImage {
     heightPx: number;
 }
 
+/**
+ * Splice `fragment` in immediately after a paragraph's OPENING TAG.
+ *
+ * Use this — never a hand-rolled `xml.replace(/<w:p\b[^>]*>/, …)` — whenever
+ * anything is inserted at the head of a paragraph. `[^>]*` swallows the slash of
+ * a SELF-CLOSING `<w:p w:rsidR="00A1"/>`, which is exactly what Word writes for
+ * an empty paragraph, so the naive replace appends after a tag that has ALREADY
+ * CLOSED: the fragment lands as the paragraph's SIBLING — a direct child of
+ * `<w:body>`. A body holding a bare `<w:pPr>` is not openable in Word
+ * (`body.illegal-child`, fatal), and the app draws it as an unknown-block chip.
+ * {@link splitParagraph} normalises `<w:p/>` to paired form first, so the
+ * fragment always lands INSIDE the paragraph.
+ *
+ * Anchored to the opening tag, so a paragraph nested in a text box
+ * (`w:txbxContent`) can never be the one that gets written to.
+ *
+ * Returns `xml` unchanged when it does not begin with a `<w:p>` element, or when
+ * `fragment` is empty.
+ */
+export declare function insertAfterParagraphOpen(xml: string, fragment: string): string;
+
 export declare interface InsertLineOptions {
     color?: string;
     arrowEnd?: boolean;
@@ -2037,6 +2181,9 @@ export declare interface MarkdownRenderCtx {
      */
     headingBase?: 2 | 3;
 }
+
+/** Word's own ceiling (its font-size box refuses more). */
+export declare const MAX_FONT_SIZE_PT = 1638;
 
 export declare class Mdocxengine {
     zip: ZipManager;
@@ -2279,6 +2426,9 @@ export declare class MetadataManager {
      */
     setAppProperties(props: AppProperties): Promise<void>;
 }
+
+/** Word's own floor: one half-point. */
+export declare const MIN_FONT_SIZE_PT = 0.5;
 
 /**
  * Scan a full `document.xml` for the highest existing drawing id (`wp:docPr @id`
@@ -2963,6 +3113,9 @@ declare interface RawNumbering {
     abstractNums: any[];
     nums: any[];
 }
+
+/** Read where the first drawing in `xml` is placed. `null` when there is none. */
+export declare function readDrawingLayout(xml: string): DrawingPlacement | null;
 
 /** Read back the effective (directly-set) pagination flags of a paragraph. */
 export declare function readParagraphPagination(xml: string): ParagraphPagination;
@@ -4462,6 +4615,14 @@ export declare interface TocResult {
     /** How many blocks a replaced table occupied (0 when none was replaced). */
     replaced: number;
 }
+
+/**
+ * `sizePt` in POINTS → whole half-points, or throw.
+ *
+ * @param sizePt  A real font size in points, e.g. 14 or 11.5.
+ * @param what    What the caller was setting, for the error message.
+ */
+export declare function toHalfPoints(sizePt: number, what?: string): number;
 
 export declare class TrackedChangesManager {
     private zip;

@@ -2,6 +2,7 @@ import * as XmlUtils from "@/utils/xmlUtils";
 import AdmZip from "adm-zip";
 import { canonicalizeRunProps, canonicalizeStyleChildren } from "@/core/ooxml/canonicalOrder";
 import { mergeRunProps, type RunProps } from "@/core/ooxml/runProps";
+import { toHalfPoints } from "@/core/ooxml/hps";
 
 const STYLES_PATH = "word/styles.xml";
 
@@ -59,7 +60,7 @@ function rewriteHeadingRunProps(rPrInner: string, formatting: HeadingRunFormatti
   let sizeTags = "";
   if (formatting.fontSizePt !== undefined) {
     body = stripTag(stripTag(body, "sz"), "szCs");
-    const halfPts = Math.round(formatting.fontSizePt * 2);
+    const halfPts = toHalfPoints(formatting.fontSizePt, "heading style fontSizePt");
     sizeTags = `<w:sz w:val="${halfPts}"/><w:szCs w:val="${halfPts}"/>`;
   }
 

@@ -59,6 +59,7 @@ import {
 import { ZipManager } from "@/utils/ZipManager";
 import { parseOrderedDoc, buildOrderedDoc } from "@/core/files/body/OrderedBody";
 import type { BodyBlock } from "@/core/files/body/OrderedBody";
+import { updateParagraphProps } from "@/core/ooxml/paragraphProps";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public types
@@ -717,6 +718,27 @@ const BODY_CHILDREN = new Set([
   "w:moveFrom", "w:moveTo", "m:oMathPara", "m:oMath", "w:altChunk", "w:sectPr",
 ]);
 
+/** Match a whole standalone `<w:pPr>` element — self-closing or paired. Capture
+ *  group 1 is its inner XML (`undefined` for the self-closing form). */
+const ORPHAN_PPR_RE = /^<w:pPr(?:\s*\/>|(?:\s[^>]*?)?>([\s\S]*?)<\/w:pPr>)$/;
+
+/** The inner XML of a body-level `<w:pPr>`, or null when `xml` is not cleanly one
+ *  (in which case it is left alone rather than merged into a paragraph). */
+function orphanPPrInner(xml: string): string | null {
+  const m = ORPHAN_PPR_RE.exec(xml.trim());
+  return m ? (m[1] ?? "") : null;
+}
+
+/** Index of the paragraph immediately before `i`, skipping whitespace fillers.
+ *  -1 when the previous real block is not a paragraph (nothing to merge into). */
+function precedingParagraph(blocks: BodyBlock[], i: number): number {
+  for (let j = i - 1; j >= 0; j--) {
+    if (isFiller(blocks[j])) continue;
+    return blocks[j].kind === "paragraph" ? j : -1;
+  }
+  return -1;
+}
+
 /** True when a run carries something a reader would actually see or miss. */
 function runHasContent(xml: string): boolean {
   if (/<w:(?:drawing|pict|object|br|tab|sym|noBreakHyphen|softHyphen|fldChar|instrText|footnoteReference|endnoteReference|commentReference)\b/.test(xml)) return true;
@@ -802,14 +824,66 @@ function checkBody(zip: DocxZip, fix: boolean): { findings: Finding[]; rewrote: 
         fixed: fix,
       }));
     }
-    if (others.length) {
+    // An orphaned `<w:pPr>` is repairable, and worth repairing rather than
+    // dropping: it is a paragraph's properties — very often a SECTION BREAK, the
+    // page boundary of a front-matter page — that a writer spliced in after a
+    // self-closing `<w:p/>`'s already-closed tag, so it landed BESIDE the
+    // paragraph instead of inside it. Merging it back into that paragraph
+    // restores exactly what the writer meant, page break included; deleting it
+    // would silently repaginate the thesis.
+    const reattachable = new Set(
+      others.filter(({ b, i }) => b.tag === "w:pPr" && precedingParagraph(blocks, i) >= 0),
+    );
+    const unfixable = others.filter((o) => !reattachable.has(o));
+
+    if (reattachable.size) {
+      let merged = 0;
+      if (fix) {
+        // Reverse order: splicing an orphan out never shifts an earlier one.
+        for (const { b, i } of [...reattachable].reverse()) {
+          const p = precedingParagraph(blocks, i);
+          const inner = orphanPPrInner(b.xml);
+          if (inner === null) continue;
+          try {
+            // `updateParagraphProps` normalises the self-closing `<w:p/>` back to
+            // paired form and re-canonicalises CT_PPr order, so a merged
+            // `w:sectPr` lands where the schema wants it. An empty orphan leaves
+            // the paragraph byte-identical and is simply dropped.
+            if (inner) {
+              blocks[p] = { ...blocks[p], xml: updateParagraphProps(blocks[p].xml, (cur) => cur + inner) };
+            }
+          } catch {
+            continue; // malformed props: leave it in place, still reported below
+          }
+          blocks.splice(i, 1);
+          merged++;
+          mutated = true;
+        }
+      }
+      out.push(finding({
+        rule: "body.orphaned-ppr",
+        severity: "fatal",
+        part: DOCUMENT,
+        count: fix ? merged : reattachable.size,
+        message:
+          `${reattachable.size} <w:pPr> element(s) sit directly in <w:body> instead of inside the paragraph they ` +
+          "describe. Paragraph properties are not block-level content, so Word refuses to open the document. " +
+          "This is what a writer produces when it splices properties in after a self-closing <w:p/> — the empty " +
+          "paragraph Word writes for a blank line. Repairing merges each one back into the paragraph before it, " +
+          "which preserves the section break it usually carries.",
+        fixable: true,
+        fixed: fix,
+      }));
+    }
+
+    if (unfixable.length) {
       out.push(finding({
         rule: "body.illegal-child",
         severity: "fatal",
         part: DOCUMENT,
-        count: others.length,
-        message: `${others.length} element(s) in <w:body> are not block-level content. Word refuses to open the document.`,
-        detail: sample(others.map((o) => `<${o.b.tag}>`)),
+        count: unfixable.length,
+        message: `${unfixable.length} element(s) in <w:body> are not block-level content. Word refuses to open the document.`,
+        detail: sample(unfixable.map((o) => `<${o.b.tag}>`)),
         fixable: false,
       }));
     }
