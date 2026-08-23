@@ -332,6 +332,8 @@ export type {
   ChromeDuotone,
 } from "./Doc";
 export type { BodyBlock, BlockKind } from "./core/files/body/OrderedBody";
+export { splitDocument, assembleDocument, isEditableBlock } from "./core/files/body/OrderedBody";
+export type { SplitDocument } from "./core/files/body/OrderedBody";
 export type { StyleEntry } from "./core/PartsManagers/StylesManager";
 export type { NumberingDefinition } from "./core/PartsManagers/NumberingManager";
 export type { CoreProperties, AppProperties } from "./core/PartsManagers/MetadataManager";

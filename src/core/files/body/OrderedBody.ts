@@ -292,6 +292,24 @@ export function scanTopLevelChildren(inner: string): BodyBlock[] {
 }
 
 /**
+ * Whether a body child counts as an indexable block.
+ *
+ * Excludes the trailing w:sectPr AND whitespace-only #text runs (left behind by
+ * pretty-printing round-trips) — counting the latter as blocks would corrupt
+ * every consumer's block indices. The excluded blocks stay in the document on
+ * byte-safe reassembly; they're just never indexable.
+ *
+ * Exported because block indices are a CONTRACT with consumers outside this
+ * package (the server's page-map renderer indexes blocks the same way, and a
+ * private copy of this rule would drift into wrong page numbers).
+ */
+export function isEditableBlock(b: BodyBlock): boolean {
+  if (b.kind === "sectPr") return false;
+  if (b.kind === "other" && b.tag === "#text" && b.xml.trim() === "") return false;
+  return true;
+}
+
+/**
  * Starting just past the open tag of `<tag>` (at `from`), find the index just
  * past the matching `</tag>`, tracking depth across same-named nested elements
  * and skipping comments / PIs / CDATA / self-closing tags / quoted attrs.

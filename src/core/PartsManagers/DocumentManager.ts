@@ -6,25 +6,13 @@ import {
   assembleDocument,
   setParagraphText,
   paragraphText,
+  isEditableBlock,
   type BodyBlock,
 } from "@/core/files/body/OrderedBody";
 import { editBodySectPr, upsertSectPrReference } from "@/core/files/body/sectPr";
 import AdmZip from "adm-zip";
 
 const DOC_PATH = "word/document.xml";
-
-/**
- * True for body children that occupy a slot in the editable block-index space.
- * Excludes the trailing w:sectPr AND whitespace-only #text runs (left behind by
- * pretty-printing round-trips) — counting the latter as blocks would corrupt
- * every consumer's block indices. The excluded blocks stay in the document on
- * byte-safe reassembly; they're just never indexable.
- */
-function isEditableBlock(b: BodyBlock): boolean {
-  if (b.kind === "sectPr") return false;
-  if (b.kind === "other" && b.tag === "#text" && b.xml.trim() === "") return false;
-  return true;
-}
 
 export default class DocumentManager {
   zip: AdmZip;
