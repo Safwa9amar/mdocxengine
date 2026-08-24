@@ -14,6 +14,10 @@
  *   - styles   → retargeted to this document's styles by name (caller-supplied
  *                map); the combine flow normalizes everything to one profile, so
  *                source style DEFINITIONS are intentionally not imported.
+ *   - charts   → the chart part and its whole closure (colours, style, embedded
+ *                workbook) copied into word/charts + word/embeddings, with a new
+ *                rId. A `<c:chart r:id>` addresses a PART, so copying only the
+ *                paragraph aims it at whatever the TARGET has under that id.
  *   - equations (OMML) are inline in the paragraph XML and copied verbatim.
  *
  * The rewrite is attribute-aware and applied to EACH copied block string
@@ -27,6 +31,7 @@ import { MediaManager } from "./MediaManager";
 import { FootnoteManager } from "./FootnoteManager";
 import { NumberingManager } from "./NumberingManager";
 import { RelManager } from "./RelManager";
+import { ContentTypesManager } from "./ContentTypesManager";
 import { parseXml } from "@/utils/xmlUtils";
 import type { BodyBlock } from "@/core/files/body/OrderedBody";
 // Imported lazily inside appendDocument() to avoid an index.ts ↔ MergeManager cycle.
@@ -37,6 +42,53 @@ const PAGE_BREAK_XML = '<w:p><w:r><w:br w:type="page"/></w:r></w:p>';
 
 function pageBreakBlock(): BodyBlock {
   return { kind: "paragraph", tag: "w:p", xml: PAGE_BREAK_XML };
+}
+
+/**
+ * Content types for the parts a chart drags along, used only when the SOURCE
+ * package declares no Default for the extension (Word always does; a generator
+ * may not). The embedded workbook is the one that matters — without a Default
+ * for `xlsx` Word cannot open the chart's data sheet.
+ */
+const DEFAULT_CONTENT_TYPES: Record<string, string> = {
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  xls: "application/vnd.ms-excel",
+  bin: "application/vnd.openxmlformats-officedocument.oleObject",
+  png: "image/png",
+  jpeg: "image/jpeg",
+  jpg: "image/jpeg",
+  gif: "image/gif",
+  emf: "image/x-emf",
+  wmf: "image/x-wmf",
+};
+
+/** Resolve a `.rels` Target against the part that declared it, POSIX-style.
+ *  `("word/charts/chart1.xml", "../embeddings/w.xlsx")` → `word/embeddings/w.xlsx`. */
+function resolvePartPath(fromPart: string, target: string): string {
+  if (target.startsWith("/")) return target.slice(1);
+  const segs = fromPart.split("/").slice(0, -1).concat(target.split("/"));
+  const out: string[] = [];
+  for (const s of segs) {
+    if (s === "." || s === "") continue;
+    if (s === "..") out.pop();
+    else out.push(s);
+  }
+  return out.join("/");
+}
+
+/** Express `toPart` relative to the directory holding `fromPart`. */
+function relativePartPath(fromPart: string, toPart: string): string {
+  const from = fromPart.split("/").slice(0, -1);
+  const to = toPart.split("/");
+  let i = 0;
+  while (i < from.length && i < to.length - 1 && from[i] === to[i]) i++;
+  return [...Array(from.length - i).fill(".."), ...to.slice(i)].join("/");
+}
+
+/** `word/charts/chart1.xml` → `word/charts/_rels/chart1.xml.rels`. */
+function partRelsPath(part: string): string {
+  const i = part.lastIndexOf("/");
+  return `${part.slice(0, i)}/_rels/${part.slice(i + 1)}.rels`;
 }
 
 export interface AppendOptions {
@@ -75,6 +127,7 @@ export class MergeManager {
   private footnotes: FootnoteManager;
   private numbering: NumberingManager;
   private rels: RelManager;
+  private contentTypes: ContentTypesManager;
 
   constructor(zip: AdmZip) {
     this.zip = zip;
@@ -83,6 +136,7 @@ export class MergeManager {
     this.footnotes = new FootnoteManager(zip);
     this.numbering = new NumberingManager(zip);
     this.rels = new RelManager(zip);
+    this.contentTypes = new ContentTypesManager(zip);
   }
 
   /**
@@ -123,6 +177,7 @@ export class MergeManager {
     const hyperlinkMap = await this.buildHyperlinkMap(srcRels, scan);
     const footnoteMap = await this.buildFootnoteMap(source, scan);
     const numberingMap = await this.buildNumberingMap(source, scan);
+    const chartMap = await this.buildChartMap(source, srcRels, scan);
 
     return blocks.map((b) => {
       let xml = b.xml;
@@ -130,6 +185,7 @@ export class MergeManager {
       xml = this.applyHyperlinkMap(xml, hyperlinkMap);
       xml = this.applyFootnoteRefMap(xml, footnoteMap);
       xml = this.applyNumIdMap(xml, numberingMap);
+      xml = this.applyChartMap(xml, chartMap);
       xml = this.applyStyleMap(xml, styleMap);
       xml = this.stripSectionChrome(xml);
       return { kind: b.kind, tag: b.tag, xml };
@@ -229,6 +285,178 @@ export class MergeManager {
       map[rId] = newId;
     }
     return map;
+  }
+
+  // ─── Charts (part-closure copy) ─────────────────────────────────────────────
+  //
+  // A chart is NOT inline in the paragraph: `<c:chart r:id="rIdN"/>` points at a
+  // whole part (`word/charts/chart1.xml`), which in turn points at its own colour
+  // and style parts and an embedded .xlsx workbook. Copying the paragraph without
+  // copying that closure leaves the reference aimed at whatever rId happens to
+  // occupy that slot in the TARGET — in practice an image — and Word refuses to
+  // open the document ("Word experienced an error trying to open the file").
+  // That is not hypothetical: it shipped a student's combined thesis that could
+  // never be opened, and neither schema validation nor a dangling-target check
+  // sees it, because the rId resolves fine — to the wrong KIND of part.
+
+  /** Copy each chart referenced by the blocks, with its whole part closure;
+   *  return source-rId → new-rId. */
+  private async buildChartMap(
+    source: MdocxengineType,
+    srcRels: Record<string, { type: string; target: string; targetMode?: string }>,
+    blocksXml: string,
+  ): Promise<Record<string, string>> {
+    const refRIds = new Set(
+      [...blocksXml.matchAll(/<c:chart\b[^>]*\br:id="([^"]+)"/g)].map((m) => m[1]),
+    );
+    if (refRIds.size === 0) return {};
+
+    const srcOverrides = await this.readContentTypeOverrides(source.zip);
+    const srcDefaults = await this.readContentTypeDefaults(source.zip);
+    const copied = new Map<string, string>();
+    const map: Record<string, string> = {};
+
+    for (const rId of refRIds) {
+      const rel = srcRels[rId];
+      // Only follow a rel that really is a chart; anything else stays unmapped and
+      // is dropped below rather than left pointing at a stranger's part.
+      if (!rel || !/\/chart$/.test(rel.type) || rel.targetMode === "External") continue;
+      const srcPath = resolvePartPath("word/document.xml", rel.target);
+      if (!source.zip.getEntry(srcPath)) continue;
+
+      const newPath = await this.copyPartClosure(source, srcPath, srcOverrides, srcDefaults, copied);
+      const newId = await this.rels.genId();
+      // document.xml.rels targets are relative to word/.
+      await this.rels.addRelationship(newId, rel.type, newPath.replace(/^word\//, ""));
+      map[rId] = newId;
+    }
+    return map;
+  }
+
+  /**
+   * Copy `srcPath` and every part it transitively references into this package
+   * under a free name, carrying content types across. Returns the new part path.
+   *
+   * `.rels` targets are rewritten to the copied parts' new names, so two merged
+   * documents that both ship `charts/chart1.xml` cannot collide.
+   */
+  private async copyPartClosure(
+    source: MdocxengineType,
+    srcPath: string,
+    srcOverrides: Record<string, string>,
+    srcDefaults: Record<string, string>,
+    copied: Map<string, string>,
+  ): Promise<string> {
+    const already = copied.get(srcPath);
+    if (already) return already;
+
+    const entry = source.zip.getEntry(srcPath);
+    if (!entry) return srcPath;
+    const bytes = entry.getData();
+
+    const newPath = this.freePartPath(srcPath);
+    // Record BEFORE recursing so a cyclic reference terminates.
+    copied.set(srcPath, newPath);
+
+    // Content type: an explicit Override travels with the part; otherwise the
+    // extension's Default must exist in this package.
+    const ct = srcOverrides["/" + srcPath];
+    if (ct) {
+      await this.contentTypes.addOverride("/" + newPath, ct);
+    } else {
+      const ext = (/\.([a-zA-Z0-9]+)$/.exec(srcPath)?.[1] ?? "").toLowerCase();
+      const def = srcDefaults[ext] ?? DEFAULT_CONTENT_TYPES[ext];
+      if (ext && def) await this.contentTypes.addDefault(ext, def);
+    }
+
+    // Follow this part's own relationships.
+    const srcRelsPath = partRelsPath(srcPath);
+    const relsXml = source.zip.readAsText(srcRelsPath);
+    if (relsXml) {
+      const obj: any = await parseXml(relsXml);
+      const raw = obj?.Relationships?.Relationship;
+      const arr = Array.isArray(raw) ? raw : raw ? [raw] : [];
+      const out: any[] = [];
+      for (const r of arr) {
+        const id = r?.$?.Id;
+        const target = r?.$?.Target;
+        if (!id || target == null) continue;
+        if (r?.$?.TargetMode === "External") {
+          out.push({ $: { ...r.$ } });
+          continue;
+        }
+        const depSrc = resolvePartPath(srcPath, String(target));
+        if (!source.zip.getEntry(depSrc)) continue; // dangling in the source — drop it
+        const depNew = await this.copyPartClosure(source, depSrc, srcOverrides, srcDefaults, copied);
+        out.push({ $: { ...r.$, Target: relativePartPath(newPath, depNew) } });
+      }
+      if (out.length) {
+        const relsMgr = new RelManager(this.zip, partRelsPath(newPath));
+        for (const r of out) {
+          await relsMgr.addRelationship(r.$.Id, r.$.Type, r.$.Target, r.$.TargetMode);
+        }
+      }
+    }
+
+    this.zip.addFile(newPath, bytes);
+    return newPath;
+  }
+
+  /** `word/charts/chart1.xml` → the same name, or `chart2.xml`, … until free. */
+  private freePartPath(srcPath: string): string {
+    const dir = srcPath.slice(0, srcPath.lastIndexOf("/") + 1);
+    const file = srcPath.slice(dir.length);
+    const m = /^(.*?)(\d*)(\.[^.]+)$/.exec(file);
+    const stem = m?.[1] ?? file;
+    const ext = m?.[3] ?? "";
+    for (let i = 1; i < 10000; i++) {
+      const candidate = `${dir}${stem}${i}${ext}`;
+      if (!this.zip.getEntry(candidate)) return candidate;
+    }
+    return srcPath;
+  }
+
+  /** Remap r:id ONLY inside <c:chart .../> (never other r:id). Any chart whose
+   *  part could not be carried has its whole drawing removed — a reference to a
+   *  part that is not there is exactly what makes Word reject the file. */
+  private applyChartMap(xml: string, idMap: Record<string, string>): string {
+    if (!xml.includes("<c:chart")) return xml;
+    let out = xml.replace(/<c:chart\b[^>]*>/g, (tag) =>
+      tag.replace(/\br:id="([^"]+)"/, (full, val) => (idMap[val] ? `r:id="${idMap[val]}"` : full)),
+    );
+    // Drop drawings still pointing at an un-copied chart.
+    out = out.replace(/<w:drawing>[\s\S]*?<\/w:drawing>/g, (drawing) => {
+      const refs = [...drawing.matchAll(/<c:chart\b[^>]*\br:id="([^"]+)"/g)].map((m) => m[1]);
+      const orphan = refs.some((r) => !Object.values(idMap).includes(r));
+      return refs.length && orphan ? "" : drawing;
+    });
+    return out;
+  }
+
+  /** `/word/charts/chart1.xml` → content type, from a package's [Content_Types].xml. */
+  private async readContentTypeOverrides(zip: AdmZip): Promise<Record<string, string>> {
+    const xml = zip.readAsText("[Content_Types].xml");
+    if (!xml) return {};
+    const obj: any = await parseXml(xml);
+    const raw = obj?.Types?.Override;
+    const arr = Array.isArray(raw) ? raw : raw ? [raw] : [];
+    const out: Record<string, string> = {};
+    for (const o of arr) if (o?.$?.PartName) out[String(o.$.PartName)] = String(o.$.ContentType ?? "");
+    return out;
+  }
+
+  /** extension (lower-case, no dot) → content type. */
+  private async readContentTypeDefaults(zip: AdmZip): Promise<Record<string, string>> {
+    const xml = zip.readAsText("[Content_Types].xml");
+    if (!xml) return {};
+    const obj: any = await parseXml(xml);
+    const raw = obj?.Types?.Default;
+    const arr = Array.isArray(raw) ? raw : raw ? [raw] : [];
+    const out: Record<string, string> = {};
+    for (const d of arr) {
+      if (d?.$?.Extension) out[String(d.$.Extension).toLowerCase()] = String(d.$.ContentType ?? "");
+    }
+    return out;
   }
 
   // ─── Footnotes (verbatim element copy, rich-content fidelity) ────────────────

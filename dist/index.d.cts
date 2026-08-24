@@ -106,6 +106,13 @@ export declare interface AppProperties {
     characters?: number;
 }
 
+/** Reassemble a split document into a full `document.xml` string. */
+export declare function assembleDocument(split: {
+    pre: string;
+    blocks: BodyBlock[];
+    post: string;
+}): string;
+
 /** One body block as plain data. */
 export declare interface BlockInfo {
     index: number;
@@ -2040,6 +2047,20 @@ export declare interface InspectOptions {
     aggressive?: boolean;
 }
 
+/**
+ * Whether a body child counts as an indexable block.
+ *
+ * Excludes the trailing w:sectPr AND whitespace-only #text runs (left behind by
+ * pretty-printing round-trips) — counting the latter as blocks would corrupt
+ * every consumer's block indices. The excluded blocks stay in the document on
+ * byte-safe reassembly; they're just never indexable.
+ *
+ * Exported because block indices are a CONTRACT with consumers outside this
+ * package (the server's page-map renderer indexes blocks the same way, and a
+ * private copy of this rule would drift into wrong page numbers).
+ */
+export declare function isEditableBlock(b: BodyBlock): boolean;
+
 /** True when `xml` is a `<w:p>` element this module can rewrite. */
 export declare function isParagraphXml(xml: string): boolean;
 
@@ -2341,6 +2362,7 @@ export declare class MergeManager {
     private footnotes;
     private numbering;
     private rels;
+    private contentTypes;
     constructor(zip: default_2);
     /**
      * Copy `sourceBuffer`'s body into this document, fully remapped, appended after
@@ -2377,6 +2399,27 @@ export declare class MergeManager {
      * the target (preserving TargetMode="External"); return source-rId → new-rId.
      */
     private buildHyperlinkMap;
+    /** Copy each chart referenced by the blocks, with its whole part closure;
+     *  return source-rId → new-rId. */
+    private buildChartMap;
+    /**
+     * Copy `srcPath` and every part it transitively references into this package
+     * under a free name, carrying content types across. Returns the new part path.
+     *
+     * `.rels` targets are rewritten to the copied parts' new names, so two merged
+     * documents that both ship `charts/chart1.xml` cannot collide.
+     */
+    private copyPartClosure;
+    /** `word/charts/chart1.xml` → the same name, or `chart2.xml`, … until free. */
+    private freePartPath;
+    /** Remap r:id ONLY inside <c:chart .../> (never other r:id). Any chart whose
+     *  part could not be carried has its whole drawing removed — a reference to a
+     *  part that is not there is exactly what makes Word reject the file. */
+    private applyChartMap;
+    /** `/word/charts/chart1.xml` → content type, from a package's [Content_Types].xml. */
+    private readContentTypeOverrides;
+    /** extension (lower-case, no dot) → content type. */
+    private readContentTypeDefaults;
     /** Copy each referenced source footnote verbatim; return source-id → new-id. */
     private buildFootnoteMap;
     /**
@@ -3824,7 +3867,7 @@ export declare interface SkippedTextCaption {
 export declare type SkipReason = "already-a-caption" | "is-a-heading" | "contains-image" | "contains-field";
 
 /** The result of splitting a full `word/document.xml`. */
-declare interface SplitDocument {
+export declare interface SplitDocument {
     /** Everything up to and including the `<w:body ...>` open tag. */
     pre: string;
     /** The `<w:body ...>` open tag itself (subset of `pre`, for convenience). */
@@ -3834,6 +3877,14 @@ declare interface SplitDocument {
     /** `</w:body>` and everything after it (trailing whitespace, `</w:document>`, …). */
     post: string;
 }
+
+/**
+ * Split a full `word/document.xml` into the body region's top-level children,
+ * each preserved as its exact original substring.
+ *
+ * Guarantee: `pre + blocks.map(b => b.xml).join("") + post === documentXml`.
+ */
+export declare function splitDocument(documentXml: string): SplitDocument;
 
 /** Strip the common inline markdown markers, leaving plain text. */
 export declare function stripInlineMarkdown(s: string): string;

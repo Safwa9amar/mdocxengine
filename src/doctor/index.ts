@@ -119,7 +119,7 @@ export interface InspectOptions {
 /** Parts whose root holds wordprocessing content (paragraphs, tables, runs). */
 const WORD_STORY = /^word\/(document|header\d*|footer\d*|footnotes|endnotes|comments)\.xml$/;
 /** Story parts PLUS the definition parts that use the same CT_* sequences. */
-const SEQUENCED_PART = /^word\/(document|header\d*|footer\d*|footnotes|endnotes|comments|styles|numbering)\.xml$/;
+const SEQUENCED_PART = /^word\/(document|header\d*|footer\d*|footnotes|endnotes|comments|styles|numbering|settings)\.xml$/;
 
 const CONTENT_TYPES = "[Content_Types].xml";
 const ROOT_RELS = "_rels/.rels";
@@ -218,6 +218,58 @@ const CT_PBDR: SequenceOrder = ["w:top", "w:left", "w:bottom", "w:right", "w:bet
 const CT_MARGINS: SequenceOrder = ["w:top", ["w:start", "w:left"], "w:bottom", ["w:end", "w:right"]];
 const CT_NUMPR: SequenceOrder = ["w:ilvl", "w:numId", "w:numberingChange", "w:ins"];
 
+// CT_Lvl — one level of an abstract numbering definition. `w:lvlJc` sits LATE
+// (just before the properties), which is the trap: writers that think of it as
+// "alignment, like numFmt" emit it right after `w:start` and everything from
+// `w:numFmt` on is then out of sequence.
+//
+// WARNING, not fatal, and the evidence is the seed asset: `thesis-base.docx`
+// carries nine levels in exactly this shape and Word opens it without complaint
+// (verified by driving Word itself). It was briefly marked fatal on the
+// assumption that it was what made a combined thesis unopenable; the real cause
+// turned out to be `rels.type-mismatch`. Normalise it, but never tell staff a
+// thesis that opens fine is broken.
+const CT_LVL: SequenceOrder = [
+  "w:start", "w:numFmt", "w:lvlRestart", "w:pStyle", "w:isLgl", "w:suff", "w:lvlText",
+  "w:lvlPicBulletId", "w:legacy", "w:lvlJc", "w:pPr", "w:rPr",
+];
+
+// CT_Settings. Long, and nearly all of it optional, so the only part that ever
+// bites is the tail: `w:compat` comes near the END, after which almost nothing
+// may follow. The seed `thesis-base.docx` emits `<w:displayBackgroundShape/>`
+// AFTER `<w:compat>` — invalid in every thesis the product has ever made, and
+// tolerated by Word, which is why it went unnoticed.
+const CT_SETTINGS: SequenceOrder = [
+  "w:writeProtection", "w:view", "w:zoom", "w:removePersonalInformation", "w:removeDateAndTime",
+  "w:doNotDisplayPageBoundaries", "w:displayBackgroundShape", "w:printPostScriptOverText",
+  "w:printFractionalCharacterWidth", "w:printFormsData", "w:embedTrueTypeFonts",
+  "w:embedSystemFonts", "w:saveSubsetFonts", "w:saveFormsData", "w:mirrorMargins",
+  "w:alignBordersAndEdges", "w:bordersDoNotSurroundHeader", "w:bordersDoNotSurroundFooter",
+  "w:gutterAtTop", "w:hideSpellingErrors", "w:hideGrammaticalErrors", "w:activeWritingStyle",
+  "w:proofState", "w:formsDesign", "w:attachedTemplate", "w:linkStyles", "w:stylePaneFormatFilter",
+  "w:stylePaneSortMethod", "w:documentType", "w:mailMerge", "w:revisionView", "w:trackChanges",
+  "w:doNotTrackMoves", "w:doNotTrackFormatting", "w:documentProtection", "w:autoFormatOverride",
+  "w:styleLockTheme", "w:styleLockQFSet", "w:defaultTabStop", "w:autoHyphenation",
+  "w:consecutiveHyphenLimit", "w:hyphenationZone", "w:doNotHyphenateCaps", "w:showEnvelope",
+  "w:summaryLength", "w:clickAndTypeStyle", "w:defaultTableStyle", "w:evenAndOddHeaders",
+  "w:bookFoldRevPrinting", "w:bookFoldPrinting", "w:bookFoldPrintingSheets",
+  "w:drawingGridHorizontalSpacing", "w:drawingGridVerticalSpacing",
+  "w:displayHorizontalDrawingGridEvery", "w:displayVerticalDrawingGridEvery",
+  "w:doNotUseMarginsForDrawingGridOrigin", "w:drawingGridHorizontalOrigin",
+  "w:drawingGridVerticalOrigin", "w:doNotShadeFormData", "w:noPunctuationKerning",
+  "w:characterSpacingControl", "w:printTwoOnOne", "w:strictFirstAndLastChars",
+  "w:noLineBreaksAfter", "w:noLineBreaksBefore", "w:savePreviewPicture",
+  "w:doNotValidateAgainstSchema", "w:saveInvalidXml", "w:ignoreMixedContent",
+  "w:alwaysShowPlaceholderText", "w:doNotDemarcateInvalidXml", "w:saveXmlDataOnly",
+  "w:useXSLTWhenSaving", "w:saveThroughXslt", "w:showXMLTags", "w:alwaysMergeEmptyNamespace",
+  "w:updateFields", "w:hdrShapeDefaults", "w:footnotePr", "w:endnotePr", "w:compat",
+  "w:docVars", "w:rsids", "m:mathPr", "w:attachedSchema", "w:themeFontLang",
+  "w:clrSchemeMapping", "w:doNotIncludeSubdocsInStats", "w:doNotAutoCompressPictures",
+  "w:forceUpgrade", "w:captions", "w:readModeInkLockDown", "w:smartTagType",
+  "sl:schemaLibrary", "w:shapeDefaults", "w:doNotEmbedSmartTags", "w:decimalSymbol",
+  "w:listSeparator",
+];
+
 // CT_Style. The seed `thesis-base.docx` puts w:rPr first in every style — invalid.
 const CT_STYLE: SequenceOrder = [
   "w:name", "w:aliases", "w:basedOn", "w:next", "w:link", "w:autoRedefine", "w:hidden",
@@ -235,7 +287,7 @@ const CT_STYLE: SequenceOrder = [
  * worth normalising (our own writers should not emit them) but not worth telling
  * staff a healthy imported thesis is broken.
  */
-const SEQUENCES: { tag: string; order: SequenceOrder; label: string; severity: Severity }[] = [
+const SEQUENCES: { tag: string; order: SequenceOrder; label: string; severity: Severity; part?: RegExp }[] = [
   // Innermost first: borders/margins sit inside tblPr and tcPr.
   { tag: "w:tblBorders", order: CT_BORDERS, label: "table borders", severity: "fatal" },
   { tag: "w:tcBorders", order: CT_BORDERS, label: "cell borders", severity: "fatal" },
@@ -247,38 +299,57 @@ const SEQUENCES: { tag: string; order: SequenceOrder; label: string; severity: S
   { tag: "w:tblPr", order: CT_TBLPR, label: "table properties", severity: "fatal" },
   { tag: "w:sectPr", order: CT_SECTPR, label: "section properties", severity: "warning" },
   { tag: "w:pPr", order: CT_PPR, label: "paragraph properties", severity: "warning" },
-  { tag: "w:style", order: CT_STYLE, label: "style definitions", severity: "warning" },
+  { tag: "w:style", order: CT_STYLE, label: "style definitions", severity: "warning", part: /^word\/styles\.xml$/ },
+  { tag: "w:lvl", order: CT_LVL, label: "numbering levels", severity: "warning", part: /^word\/numbering\.xml$/ },
+  { tag: "w:settings", order: CT_SETTINGS, label: "document settings", severity: "warning", part: /^word\/settings\.xml$/ },
 ];
 
 /**
- * Properties elements that must be the FIRST child of their parent.
+ * Properties elements that must LEAD their parent.
  *
  * A separate rule from SEQUENCES because the constraint is different: the parent
  * holds repeatable CONTENT (runs, cells, rows) that must not be reordered, so all
  * we can do is move the one properties element back to the front. A `w:trPr`
  * sitting after a `w:tc` is invalid and, like the border case, silently fatal.
+ *
+ * `after` names the elements the schema puts AHEAD of `child` — front means "the
+ * first slot this element may occupy", not index 0. CT_Row is
+ * `tblPrEx?, trPr?, EG_ContentCellContent*`, so a row that carries a table-level
+ * exception has TWO leading properties elements and `w:trPr` belongs second.
+ * Hoisting it to index 0 (which this did until 2026-08-15) took every valid row
+ * Word had written with a `w:tblPrEx` and made it invalid — the doctor's own
+ * repair was the corruption. `w:tblPrEx` is listed first so a row that arrives
+ * already inverted is put right before the `w:trPr` rule looks at it.
  */
-const FIRST_CHILD: { parent: string; child: string; label: string }[] = [
-  { parent: "w:tr", child: "w:trPr", label: "row properties" },
+const FIRST_CHILD: { parent: string; child: string; label: string; after?: string[] }[] = [
+  { parent: "w:tr", child: "w:tblPrEx", label: "row-level table exceptions" },
+  { parent: "w:tr", child: "w:trPr", label: "row properties", after: ["w:tblPrEx"] },
   { parent: "w:tc", child: "w:tcPr", label: "cell properties" },
   { parent: "w:p", child: "w:pPr", label: "paragraph properties" },
   { parent: "w:r", child: "w:rPr", label: "run properties" },
 ];
 
-/** Move `child` to the front of `inner`, or null when it is already there. */
-function hoistFirstChild(inner: string, child: string): string | null {
+/** Move `child` into its leading slot — past any `after` element already sitting
+ *  there — or null when it is absent or in that slot already. */
+function hoistFirstChild(inner: string, child: string, after: string[] = []): string | null {
   const split = splitChildren(inner);
   if (!split || split.items.length < 2) return null;
   const at = split.items.findIndex((i) => i.tag === child);
-  if (at <= 0) return null; // absent, or already first
+  if (at < 0) return null; // absent
+  // Skip the elements the schema seats ahead of this one; the first index left is
+  // where it belongs.
+  let target = 0;
+  while (target < at && after.includes(split.items[target].tag)) target++;
+  if (at === target) return null; // already in its slot
+  if (at < target) return null; // ahead of an element that may precede it — leave it
   const [moved] = split.items.splice(at, 1);
   // The moved element takes the leading whitespace of the element it displaces,
   // and hands its own to whatever now follows the gap it left.
-  const head = split.items[0];
+  const head = split.items[target];
   const lead = head.lead;
   head.lead = moved.lead;
   moved.lead = lead;
-  split.items.unshift(moved);
+  split.items.splice(target, 0, moved);
   return split.items.map((i) => i.lead + i.xml).join("") + split.tail;
 }
 
@@ -465,6 +536,58 @@ function stripReferences(xml: string, rId: string): { xml: string; removed: numb
   return { xml: out, removed };
 }
 
+/**
+ * Remove only the wrappers holding a WRONGLY-TYPED reference.
+ *
+ * Deliberately not `stripReferences`: that keys on the rId and removes every use
+ * of it, which is right for a dead rel (nothing can use it) and badly wrong here.
+ * A mismatched id is usually a perfectly good relationship being pointed at by
+ * the wrong kind of element — the thesis that prompted this had `<c:chart
+ * r:id="rId7">` alongside a legitimate `<a:blip r:embed="rId7">`, and stripping
+ * by id deleted the student's image too. Only the offending element's wrapper
+ * goes; every other user of that rId is untouched.
+ */
+function stripMismatchedRefs(
+  xml: string,
+  bad: { id: string; re: RegExp }[],
+): { xml: string; removed: number } | null {
+  const offends = (s: string) =>
+    bad.some(({ id, re }) => [...s.matchAll(new RegExp(re.source, "g"))].some((m) => m[1] === id));
+  if (!offends(xml)) return { xml, removed: 0 };
+
+  let out = xml;
+  let removed = 0;
+  for (const tag of REF_WRAPPERS) {
+    for (;;) {
+      const hit = findElements(out, tag).find((r) => offends(out.slice(r.start, r.end)));
+      if (!hit) break;
+      out = out.slice(0, hit.start) + out.slice(hit.end);
+      removed++;
+    }
+  }
+  // A mismatched reference outside any wrapper we know how to remove: leave the
+  // whole part alone rather than half-fix it.
+  if (offends(out)) return null;
+  return { xml: out, removed };
+}
+
+/**
+ * References that demand a specific relationship Type.
+ *
+ * Only elements whose Type is unambiguous are listed — `<w:hyperlink r:id>` is
+ * deliberately absent, because Word also accepts an internal `document` target
+ * there for a same-file link.
+ */
+const TYPED_REFS: { re: RegExp; want: RegExp; label: string }[] = [
+  { re: /<c:chart\b[^>]*\br:id="([^"]+)"/g, want: /\/chart$/, label: "chart" },
+  { re: /<a:blip\b[^>]*\br:embed="([^"]+)"/g, want: /\/image$/, label: "image" },
+  { re: /<a:blip\b[^>]*\br:link="([^"]+)"/g, want: /\/image$/, label: "image" },
+  { re: /<v:imagedata\b[^>]*\br:id="([^"]+)"/g, want: /\/image$/, label: "image" },
+  { re: /<w:headerReference\b[^>]*\br:id="([^"]+)"/g, want: /\/header$/, label: "header" },
+  { re: /<w:footerReference\b[^>]*\br:id="([^"]+)"/g, want: /\/footer$/, label: "footer" },
+  { re: /<dgm:relIds\b[^>]*\br:dm="([^"]+)"/g, want: /\/diagramData$/, label: "diagram data" },
+];
+
 /** Dangling targets, duplicate ids, and r:id references with no relationship. */
 function checkRelationships(
   zip: DocxZip,
@@ -599,6 +722,60 @@ function checkRelationships(
       }
     }
 
+    // ── The reference resolves, but to the WRONG KIND of part ────────────────
+    //
+    // A `<c:chart r:id>` aimed at an `/image` relationship is invisible to every
+    // other check here: the id exists, the target file exists, and the schema has
+    // no idea what a relationship Type is. Word follows it, expects a chartSpace,
+    // finds a PNG, and refuses the whole document. This is what a combined thesis
+    // shipped with — unopenable from the day it was built.
+    if (owner && ownerXml) {
+      const typeOf = new Map<string, string>();
+      for (const m of xml.matchAll(/<Relationship\b[^>]*\/>/g)) {
+        const id = /\bId="([^"]*)"/.exec(m[0])?.[1];
+        const type = /\bType="([^"]*)"/.exec(m[0])?.[1];
+        if (id && type) typeOf.set(id, type);
+      }
+      const mismatched: { id: string; want: string; got: string; re: RegExp }[] = [];
+      for (const ref of TYPED_REFS) {
+        for (const m of ownerXml.matchAll(ref.re)) {
+          const id = m[1];
+          const got = typeOf.get(id);
+          if (!got || ref.want.test(got)) continue;
+          mismatched.push({ id, want: ref.label, got: got.replace(/^.*\//, ""), re: ref.re });
+        }
+      }
+      if (mismatched.length) {
+        // Keyed on element+id, not id alone: the same rId can be referenced
+        // correctly elsewhere and must keep working.
+        const uniq = [...new Map(mismatched.map((d) => [`${d.want} ${d.id}`, d])).values()];
+        let fixed = 0;
+        if (opts.fix && opts.aggressive) {
+          const strip = stripMismatchedRefs(ownerXml, uniq.map((d) => ({ id: d.id, re: d.re })));
+          if (strip && strip.xml !== ownerXml && !firstXmlError(strip.xml)) {
+            zip.addFile(owner, Buffer.from(strip.xml, "utf8"));
+            rewrote.push(owner);
+            fixed = uniq.length;
+          }
+        }
+        out.push(finding({
+          rule: "rels.type-mismatch",
+          severity: "fatal",
+          part: owner,
+          count: uniq.length,
+          message:
+            `${uniq.length} reference(s) in ${owner} point at a relationship of the wrong kind ` +
+            `(${sample(uniq.map((d) => `${d.id}: wanted ${d.want}, got ${d.got}`))}). The id resolves and the target part ` +
+            "exists, so neither a dangling-target check nor schema validation sees it — but Word follows the reference, " +
+            "finds the wrong kind of part and refuses to open the document. The referenced content is not recoverable from " +
+            "this package; repairing removes it. Enable the dead-links option to apply it.",
+          detail: sample(uniq.map((d) => d.id)),
+          fixable: true,
+          fixed: fixed > 0,
+        }));
+      }
+    }
+
     const unresolved = [...used].filter((id) => !seen.has(id));
     if (owner && unresolved.length) {
       out.push(finding({
@@ -629,7 +806,7 @@ function checkSequences(zip: DocxZip, names: string[], fix: boolean): { findings
     const perTag: { label: string; tag: string; count: number; severity: Severity; firstChild?: boolean }[] = [];
 
     for (const seq of SEQUENCES) {
-      if (name !== "word/styles.xml" && seq.tag === "w:style") continue;
+      if (seq.part && !seq.part.test(name)) continue;
       const rank = rankMap(seq.order);
       const res = rewriteElements(xml, seq.tag, (inner) => reorderInner(inner, rank));
       if (res.changed) {
@@ -641,10 +818,12 @@ function checkSequences(zip: DocxZip, names: string[], fix: boolean): { findings
     }
 
     for (const rule of FIRST_CHILD) {
-      const res = rewriteElements(xml, rule.parent, (inner) => hoistFirstChild(inner, rule.child));
+      const res = rewriteElements(xml, rule.parent, (inner) => hoistFirstChild(inner, rule.child, rule.after));
       if (res.changed) {
         perTag.push({
-          label: `${rule.label} must be the first child of <${rule.parent}>`,
+          label: rule.after?.length
+            ? `${rule.label} must sit directly after <${rule.after.join("> / <")}> in <${rule.parent}>`
+            : `${rule.label} must be the first child of <${rule.parent}>`,
           tag: rule.child,
           count: res.changed,
           severity: "fatal",

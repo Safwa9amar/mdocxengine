@@ -124,6 +124,77 @@ describe("docx-doctor: schema sequence", () => {
     expect(zip.readAsText("word/document.xml")).toBe(before);
   });
 
+  // CT_Row is `tblPrEx?, trPr?, EG_ContentCellContent*`. The FIRST_CHILD rule
+  // hoisted w:trPr to index 0 unconditionally, so the doctor took rows Word had
+  // written correctly and inverted them — its repair WAS the corruption. Found on
+  // 2026-08-15 in a combined thesis Word refused to open.
+  const rowTbl = (row: string) =>
+    `<w:tbl><w:tblPr><w:tblW w:w="5000" w:type="pct"/></w:tblPr><w:tblGrid><w:gridCol w:w="9360"/></w:tblGrid>` +
+    `<w:tr>${row}<w:tc><w:tcPr><w:tcW w:w="5000" w:type="pct"/></w:tcPr><w:p/></w:tc></w:tr></w:tbl>`;
+  const TBL_PR_EX = `<w:tblPrEx><w:tblBorders><w:top w:val="single" w:sz="4" w:space="0" w:color="auto"/></w:tblBorders></w:tblPrEx>`;
+  const TR_PR = `<w:trPr><w:trHeight w:val="448"/></w:trPr>`;
+  const rowKids = (z: DocxZip) =>
+    [...(/<w:tr>[\s\S]*?<\/w:tr>/.exec(z.readAsText("word/document.xml"))![0])
+      .matchAll(/<(w:tblPrEx|w:trPr|w:tc)[ >]/g)].map((m) => m[1]);
+
+  it("leaves a row alone when tblPrEx legally precedes trPr", () => {
+    const zip = pkg(rowTbl(TBL_PR_EX + TR_PR) + P() + SECT);
+    const before = zip.readAsText("word/document.xml");
+    inspectDocx(zip, { fix: true });
+    expect(rowKids(zip)).toEqual(["w:tblPrEx", "w:trPr", "w:tc"]);
+    expect(zip.readAsText("word/document.xml")).toBe(before);
+  });
+
+  it("puts an inverted trPr/tblPrEx pair back in schema order", () => {
+    const zip = pkg(rowTbl(TR_PR + TBL_PR_EX) + P() + SECT);
+    expect(findRule(zip, "sequence.out-of-order")).toMatchObject({ severity: "fatal", detail: "w:tblPrEx" });
+    inspectDocx(zip, { fix: true });
+    expect(rowKids(zip)).toEqual(["w:tblPrEx", "w:trPr", "w:tc"]);
+  });
+
+  it("still hoists a trPr that has fallen behind the cells", () => {
+    const zip = pkg(
+      `<w:tbl><w:tblPr><w:tblW w:w="5000" w:type="pct"/></w:tblPr><w:tblGrid><w:gridCol w:w="9360"/></w:tblGrid>` +
+      `<w:tr><w:tc><w:tcPr><w:tcW w:w="5000" w:type="pct"/></w:tcPr><w:p/></w:tc>${TR_PR}</w:tr></w:tbl>` + P() + SECT,
+    );
+    inspectDocx(zip, { fix: true });
+    expect(rowKids(zip)).toEqual(["w:trPr", "w:tc"]);
+  });
+
+  // CT_Lvl seats w:lvlJc LATE — just before w:pPr. Exporters emit it right after
+  // w:start, which puts w:numFmt and w:lvlText out of sequence behind it.
+  it("reorders a numbering level whose lvlJc came early (warning — the seed asset has 9 and Word opens it)", () => {
+    const numbering =
+      `<w:numbering ${NS}><w:abstractNum w:abstractNumId="1"><w:multiLevelType w:val="hybridMultilevel"/>` +
+      `<w:lvl w:ilvl="0"><w:start w:val="1"/><w:lvlJc w:val="left"/><w:numFmt w:val="bullet"/>` +
+      `<w:lvlText w:val="●"/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr></w:lvl>` +
+      `</w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num></w:numbering>`;
+    const zip = pkg(P() + SECT, { "word/numbering.xml": numbering });
+    expect(findRule(zip, "sequence.out-of-order")).toMatchObject({
+      severity: "warning", part: "word/numbering.xml", detail: "w:lvl",
+    });
+    inspectDocx(zip, { fix: true });
+    const lvl = /<w:lvl [\s\S]*?<\/w:lvl>/.exec(zip.readAsText("word/numbering.xml"))![0];
+    expect([...lvl.matchAll(/<(w:start|w:numFmt|w:lvlText|w:lvlJc|w:pPr)[ >]/g)].map((m) => m[1]))
+      .toEqual(["w:start", "w:numFmt", "w:lvlText", "w:lvlJc", "w:pPr"]);
+  });
+
+  // The seed thesis-base.docx emits displayBackgroundShape after w:compat, which
+  // CT_Settings forbids. Word tolerates it, so it is only a warning — but it made
+  // every thesis the product ever produced fail schema validation.
+  it("moves displayBackgroundShape ahead of compat, as a warning", () => {
+    const settings =
+      `<w:settings ${NS}><w:compat><w:compatSetting w:val="15" w:uri="u" w:name="compatibilityMode"/></w:compat>` +
+      `<w:displayBackgroundShape/></w:settings>`;
+    const zip = pkg(P() + SECT, { "word/settings.xml": settings });
+    expect(findRule(zip, "sequence.out-of-order")).toMatchObject({
+      severity: "warning", part: "word/settings.xml", detail: "w:settings",
+    });
+    inspectDocx(zip, { fix: true });
+    const out = zip.readAsText("word/settings.xml");
+    expect(out.indexOf("<w:displayBackgroundShape")).toBeLessThan(out.indexOf("<w:compat>"));
+  });
+
   it("keeps headerReference/footerReference in their authored order", () => {
     // EG_HdrFtrReferences is a repeated choice inside an ordered sequence, and
     // Word genuinely emits footerReference before headerReference.
@@ -668,5 +739,93 @@ describe("docx-doctor: half-deleted fields", () => {
       `<w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>1</w:t></w:r>` +
       `<w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>${SECT}`;
     expect(rulesOf(pkg(body))).not.toContain("field.unbalanced");
+  });
+});
+
+describe("docx-doctor: a reference resolving to the wrong KIND of part", () => {
+  // The defect behind an unopenable combined thesis: a merge copied a paragraph
+  // holding <c:chart r:id="rId7"> but not the chart part, so in the merged
+  // package rId7 was an IMAGE relationship. The id resolves and image1.png
+  // exists, so dangling-target, missing-relationship and full ECMA-376 schema
+  // validation all pass — and Word refuses the file.
+  const IMAGE_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image";
+  const CHART_DRAWING =
+    '<w:p><w:r><w:drawing><wp:inline xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">' +
+    '<wp:docPr id="1" name="Chart 1"/><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">' +
+    '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/chart">' +
+    '<c:chart xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" r:id="rId7"/>' +
+    "</a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>";
+  const DOC_RELS =
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+    `<Relationship Id="rId7" Type="${IMAGE_TYPE}" Target="media/image1.png"/></Relationships>`;
+
+  const chartPkg = () => {
+    const zip = pkg(CHART_DRAWING + P() + SECT);
+    zip.addFile("word/_rels/document.xml.rels", Buffer.from(DOC_RELS, "utf8"));
+    zip.addFile("word/media/image1.png", Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    return zip;
+  };
+
+  it("flags it as FATAL even though the id resolves and the part exists", () => {
+    const f = findRule(chartPkg(), "rels.type-mismatch");
+    expect(f).toMatchObject({ severity: "fatal", part: "word/document.xml", count: 1, fixable: true });
+    expect(f!.message).toContain("chart");
+  });
+
+  it("no OTHER rule fires — this is exactly why it went unnoticed", () => {
+    const rules = rulesOf(chartPkg());
+    expect(rules).not.toContain("rels.dangling-target");
+    expect(rules).not.toContain("rels.dangling-target-in-use");
+    expect(rules).not.toContain("rels.missing-relationship");
+  });
+
+  it("leaves it alone on the automatic path (removing content is opt-in)", () => {
+    const zip = chartPkg();
+    inspectDocx(zip, { fix: true });
+    expect(zip.readAsText("word/document.xml")).toContain("<c:chart");
+  });
+
+  it("removes the unusable drawing under the dead-links option", () => {
+    const zip = chartPkg();
+    const report = inspectDocx(zip, { fix: true, aggressive: true });
+    expect(report.findings.find((f) => f.rule === "rels.type-mismatch")!.fixed).toBe(true);
+    const out = zip.readAsText("word/document.xml");
+    expect(out).not.toContain("<c:chart");
+    expect(out).toContain("hello"); // the surrounding paragraph survives
+  });
+
+  // The repair keyed on the rId at first and deleted the student's picture along
+  // with the chart, because the SAME rId7 is referenced correctly by a blip. Only
+  // the wrongly-typed reference may be removed.
+  it("removes the chart but keeps a picture sharing the same rId", () => {
+    const PIC =
+      '<w:p><w:r><w:drawing><wp:inline xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">' +
+      '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData>' +
+      '<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:blipFill>' +
+      '<a:blip r:embed="rId7"/></pic:blipFill></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>';
+    const zip = pkg(CHART_DRAWING + PIC + P() + SECT);
+    zip.addFile("word/_rels/document.xml.rels", Buffer.from(DOC_RELS, "utf8"));
+    zip.addFile("word/media/image1.png", Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+
+    inspectDocx(zip, { fix: true, aggressive: true });
+    const out = zip.readAsText("word/document.xml");
+    expect(out).not.toContain("<c:chart");
+    expect(out).toContain('<a:blip r:embed="rId7"/>');   // the picture SURVIVES
+    expect(out).toContain("hello");
+    // and the relationship it needs is still declared
+    expect(zip.readAsText("word/_rels/document.xml.rels")).toContain('Id="rId7"');
+  });
+
+  it("does not flag a blip that correctly points at an image", () => {
+    const zip = pkg(
+      '<w:p><w:r><w:drawing><wp:inline xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing">' +
+      '<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData>' +
+      '<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:blipFill>' +
+      '<a:blip r:embed="rId7"/></pic:blipFill></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r></w:p>' +
+      P() + SECT,
+    );
+    zip.addFile("word/_rels/document.xml.rels", Buffer.from(DOC_RELS, "utf8"));
+    zip.addFile("word/media/image1.png", Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    expect(rulesOf(zip)).not.toContain("rels.type-mismatch");
   });
 });
