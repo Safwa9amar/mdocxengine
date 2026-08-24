@@ -2656,9 +2656,9 @@ export declare interface PageMargins {
     footer?: number;
 }
 
-export declare type PageNumberFormat = "decimal" | "upperRoman" | "lowerRoman" | "upperLetter" | "lowerLetter";
+export declare type PageNumberFormat = "decimal" | "upperRoman" | "lowerRoman" | "upperLetter" | "lowerLetter" | "arabicAlpha" | "arabicAbjad";
 
-declare type PageNumberFormat_2 = "decimal" | "upperRoman" | "lowerRoman" | "upperLetter" | "lowerLetter";
+declare type PageNumberFormat_2 = "decimal" | "upperRoman" | "lowerRoman" | "upperLetter" | "lowerLetter" | "arabicAlpha" | "arabicAbjad";
 
 declare interface PageNumberFormatOptions {
     /** Numbering style written to w:pgNumType. Default: "decimal". */

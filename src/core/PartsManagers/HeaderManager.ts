@@ -18,7 +18,9 @@ export type PageNumberFormat =
   | "upperRoman"
   | "lowerRoman"
   | "upperLetter"
-  | "lowerLetter";
+  | "lowerLetter"
+  | "arabicAlpha"
+  | "arabicAbjad";
 
 export interface PageNumberOptions {
   /** Paragraph alignment for the page-number line. Default: "center". */
@@ -72,6 +74,8 @@ const FORMAT_SWITCH: Record<PageNumberFormat, string> = {
   lowerRoman:   "roman",
   upperLetter:  "ALPHABETIC",
   lowerLetter:  "alphabetic",
+  arabicAlpha:  "ArabicAlpha",
+  arabicAbjad:  "ArabicAbjad",
 };
 
 const FORMAT_OOXML: Record<PageNumberFormat, string> = {
@@ -80,6 +84,8 @@ const FORMAT_OOXML: Record<PageNumberFormat, string> = {
   lowerRoman:   "lowerRoman",
   upperLetter:  "upperLetter",
   lowerLetter:  "lowerLetter",
+  arabicAlpha:  "arabicAlpha",
+  arabicAbjad:  "arabicAbjad",
 };
 
 export default class HeaderManager {
